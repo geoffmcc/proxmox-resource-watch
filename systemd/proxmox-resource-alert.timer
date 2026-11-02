@@ -1,0 +1,11 @@
+[Unit]
+Description=Check resource alert thresholds every 10 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitInactiveSec=10s
+AccuracySec=1s
+Unit=proxmox-resource-alert.service
+
+[Install]
+WantedBy=timers.target

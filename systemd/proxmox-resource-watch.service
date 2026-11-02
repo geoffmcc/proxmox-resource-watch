@@ -1,0 +1,19 @@
+[Unit]
+Description=Proxmox resource sampler (10 second intervals)
+After=local-fs.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/proxmox-resource-watch
+ExecStart=/usr/bin/python3 -u /usr/local/sbin/proxmox-resource-watch.py
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/proxmox-resource-watch
+
+[Install]
+WantedBy=multi-user.target

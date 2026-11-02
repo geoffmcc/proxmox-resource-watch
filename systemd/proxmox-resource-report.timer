@@ -1,0 +1,11 @@
+[Unit]
+Description=Send Proxmox resource digest at 07:00 daily
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+# Avoid a second catch-up email immediately after the installer's test send.
+Persistent=false
+Unit=proxmox-resource-report.service
+
+[Install]
+WantedBy=timers.target

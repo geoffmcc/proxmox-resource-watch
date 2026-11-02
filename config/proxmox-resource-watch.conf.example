@@ -1,0 +1,23 @@
+# Copy to /etc/default/proxmox-resource-watch and edit.
+PRW_INTERVAL=10
+PRW_RETENTION_DAYS=30
+PRW_LOG_DIR=/var/log/proxmox-resource-watch
+# Tuned for an otherwise lightly loaded 8-core/16-thread Proxmox host.
+# Increase this threshold on busier systems to avoid excessive event logging.
+PRW_CPU_THRESHOLD=8
+PRW_TEMP_THRESHOLD=75
+PRW_SUSTAINED_SECONDS=30
+# CPU warning/critical temperatures; tune to the CPU model, not all sensors.
+# Example for Ryzen 7 PRO 6850U: AMD specifies Tjmax of 95 C.
+PRW_CPU_WARNING_C=85
+PRW_CPU_CRITICAL_C=92
+# Real-time email alerts (enabled when the alert timer is installed and started).
+PRW_WARNING_SECONDS=30
+PRW_ALERT_CPU_PERCENT=80
+PRW_ALERT_CPU_SECONDS=300
+PRW_ALERT_COOLDOWN_SECONDS=1800
+# Address local root; the host's root alias/forwarding should deliver to admin.
+# Change to a real email address if your system has no root-mail forwarding.
+PRW_REPORT_TO=root
+# Uses the installed Mutt client and existing root forwarding setup.
+PRW_MAILER=mutt
