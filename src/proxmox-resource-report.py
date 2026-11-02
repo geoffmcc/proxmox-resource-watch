@@ -192,7 +192,9 @@ def report(day, rows, errors):
     sustained = [e for e in found if e["samples"] * INTERVAL >= SUSTAINED_SECONDS]
     brief = [e for e in found if e["samples"] * INTERVAL < SUSTAINED_SECONDS]
     def append_events(items, limit):
-        for event in items[:limit]:
+        for index, event in enumerate(items[:limit]):
+            if index:
+                out.append("")
             during = sorted(event["processes"].items(), key=lambda item: item[1], reverse=True)[:3]
             before = sorted(event["before"].items(), key=lambda item: item[1], reverse=True)[:3]
             duration = max(INTERVAL, (event["last"] - event["first"]).total_seconds() + INTERVAL)
