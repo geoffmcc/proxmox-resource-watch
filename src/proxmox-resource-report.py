@@ -135,7 +135,7 @@ def report(day, rows, errors):
             f"Sampling gaps > {INTERVAL * 2.5:g}s: {len(gaps)}", ""]
     cpu = [r["host_cpu_busy_percent"] for _, r in rows if isinstance(r.get("host_cpu_busy_percent"), (int, float))]
     gpu = [r["gpu_busy_percent"] for _, r in rows if isinstance(r.get("gpu_busy_percent"), (int, float))]
-    out += ["RESOURCE SUMMARY", "----------------", f"Host CPU: {fmt_stats(cpu, '%')}",
+    out += ["RESOURCE SUMMARY", "----------------", "", f"Host CPU: {fmt_stats(cpu, '%')}",
             f"GPU busy: {fmt_stats(gpu, '%')}"]
     sensor_values = collections.defaultdict(list)
     fan_values = collections.defaultdict(list)
@@ -152,12 +152,12 @@ def report(day, rows, errors):
             score = process_scores[name]
             score["peak"] = max(score["peak"], proc.get("cpu_percent_one_core", 0))
             score["samples"] += 1
-    out += ["", "TEMPERATURES"]
+    out += ["", "TEMPERATURES", ""]
     out += [f"  {name}: avg {temp_format(statistics.mean(values))}, "
             f"min {temp_format(min(values))}, max {temp_format(max(values))}"
             for name, values in sorted(sensor_values.items())] or ["  Unavailable"]
     all_peaks = [(max(values), name) for name, values in sensor_values.items()]
-    out += ["", "PEAK TEMPERATURE AND ASSESSMENT", "-------------------------------"]
+    out += ["", "PEAK TEMPERATURE AND ASSESSMENT", "-------------------------------", ""]
     if all_peaks:
         value, label = max(all_peaks)
         out.append(f"Highest recorded sensor: {temp_format(value)} ({label})")
@@ -180,14 +180,14 @@ def report(day, rows, errors):
         out.append("Other sensor types (GPU, NVMe, memory, etc.) require their own device-specific limits.")
     else:
         out.append("Status: UNKNOWN — no temperature sensor readings available.")
-    out += ["", "FAN SPEEDS"]
+    out += ["", "FAN SPEEDS", ""]
     out += [f"  {name}: {fmt_stats(values, ' RPM', 0)}" for name, values in sorted(fan_values.items())] or ["  Unavailable"]
-    out += ["", "TOP PROCESSES (observed one-core CPU peaks)", "-------------------------------------------"]
+    out += ["", "TOP PROCESSES (observed one-core CPU peaks)", "-------------------------------------------", ""]
     top = sorted(process_scores.items(), key=lambda kv: kv[1]["peak"], reverse=True)[:10]
     out += [f"  {name[:27]:27} peak {stats['peak']:6.1f}% | seen in {stats['samples']} samples"
             for name, stats in top] or ["  No processes above sampling threshold"]
     out += ["", f"THRESHOLD EVENTS (CPU >= {CPU_THRESHOLD:g}% or sensor >= {temp_format(TEMP_THRESHOLD)})",
-            "----------------------------------------------------------"]
+            "----------------------------------------------------------", ""]
     found = events(rows)
     sustained = [e for e in found if e["samples"] * INTERVAL >= SUSTAINED_SECONDS]
     brief = [e for e in found if e["samples"] * INTERVAL < SUSTAINED_SECONDS]
@@ -206,19 +206,19 @@ def report(day, rows, errors):
                 ", ".join(f"{n} {p:.1f}%" for n, p in during) if during else "unavailable"))
             if event["hot_sensor"]:
                 out.append("    Hottest sensor: " + event["hot_sensor"])
-    out += ["", f"SUSTAINED EVENTS (>= {SUSTAINED_SECONDS}s): {len(sustained)}; showing top 10"]
+    out += ["", f"SUSTAINED EVENTS (>= {SUSTAINED_SECONDS}s): {len(sustained)}; showing top 10", ""]
     append_events(sustained, 10)
     if not sustained:
         out.append("  None recorded")
-    out += ["", f"BRIEF SPIKES (< {SUSTAINED_SECONDS}s): {len(brief)}; showing top 10"]
+    out += ["", f"BRIEF SPIKES (< {SUSTAINED_SECONDS}s): {len(brief)}; showing top 10", ""]
     append_events(brief, 10)
     if not brief:
         out.append("  None recorded")
     if gaps:
-        out += ["", "LARGEST SAMPLING GAPS"]
+        out += ["", "LARGEST SAMPLING GAPS", ""]
         for start, end, seconds in sorted(gaps, key=lambda item: item[2], reverse=True)[:5]:
             out.append(f"  {start:%H:%M:%S} to {end:%H:%M:%S}: {seconds:.0f}s")
-    out += ["", "NOTES", "-----",
+    out += ["", "NOTES", "-----", "",
             "Events are correlations, not proof that a process caused the heat or fan change.",
             "Processes are sampled; very short-lived processes can be missed.",
             "Per-process CPU is percent of one logical core; host CPU is across all cores.",
