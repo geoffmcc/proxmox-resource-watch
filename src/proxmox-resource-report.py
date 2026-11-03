@@ -522,9 +522,9 @@ def events(rows):
     for stamp, row in rows:
         cpu = row.get("host_cpu_busy_percent")
         temps = {k: v for k, v in (row.get("temperatures_c") or {}).items()
-                 if isinstance(v, (int, float))}
+                 if finite(v)}
         hot = {k: v for k, v in temps.items() if v >= TEMP_THRESHOLD}
-        triggered = ((isinstance(cpu, (int, float)) and cpu >= CPU_THRESHOLD) or bool(hot))
+        triggered = ((finite(cpu) and cpu >= CPU_THRESHOLD) or bool(hot))
         if not triggered:
             if active:
                 groups.append(active)
@@ -541,15 +541,15 @@ def events(rows):
                     for proc in earlier_row.get("top_processes") or []:
                         before[proc.get("name", "unknown")] = max(
                             before[proc.get("name", "unknown")], proc.get("cpu_percent_one_core", 0))
-            active = {"first": stamp, "last": stamp, "samples": 0, "cpu_peak": 0.0,
-                      "temp_peak": 0.0, "hot_sensor": "", "processes": collections.defaultdict(float),
+            active = {"first": stamp, "last": stamp, "samples": 0, "cpu_peak": None,
+                      "temp_peak": None, "hot_sensor": "", "processes": collections.defaultdict(float),
                       "before": before}
         active["last"] = stamp
         active["samples"] += 1
-        if isinstance(cpu, (int, float)):
-            active["cpu_peak"] = max(active["cpu_peak"], cpu)
+        if finite(cpu):
+            active["cpu_peak"] = cpu if active["cpu_peak"] is None else max(active["cpu_peak"], cpu)
         for sensor, value in temps.items():
-            if value > active["temp_peak"]:
+            if active["temp_peak"] is None or value > active["temp_peak"]:
                 active["temp_peak"] = value
                 active["hot_sensor"] = sensor
         for proc in row.get("top_processes") or []:
@@ -559,7 +559,9 @@ def events(rows):
         preceding.append((stamp, row))
     if active:
         groups.append(active)
-    return sorted(groups, key=lambda e: (e["cpu_peak"], e["temp_peak"]), reverse=True)
+    return sorted(groups, key=lambda e: (
+        e["cpu_peak"] if e["cpu_peak"] is not None else -math.inf,
+        e["temp_peak"] if e["temp_peak"] is not None else -math.inf), reverse=True)
 
 
 def report(day, rows, errors, context_rows=None, summary=None):
@@ -654,8 +656,10 @@ def report(day, rows, errors, context_rows=None, summary=None):
             during = sorted(event["processes"].items(), key=lambda item: item[1], reverse=True)[:3]
             before = sorted(event["before"].items(), key=lambda item: item[1], reverse=True)[:3]
             duration = max(INTERVAL, (event["last"] - event["first"]).total_seconds() + INTERVAL)
+            cpu_peak = f"{event['cpu_peak']:.1f}%" if event["cpu_peak"] is not None else "unavailable"
+            temp_peak = temp_format(event["temp_peak"]) if event["temp_peak"] is not None else "unavailable"
             out.append(f"  {event['first']:%H:%M:%S}-{event['last']:%H:%M:%S} (~{duration:.0f}s), "
-                       f"CPU max {event['cpu_peak']:.1f}%, temp max {temp_format(event['temp_peak'])}")
+                       f"CPU max {cpu_peak}, temp max {temp_peak}")
             out.append("    Before (up to 30s): " + (
                 ", ".join(f"{n} {p:.1f}%" for n, p in before) if before else "unavailable"))
             out.append("    During: " + (

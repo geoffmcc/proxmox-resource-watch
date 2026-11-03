@@ -1,6 +1,24 @@
 # v0.2.0 release acceptance
 
-Discord work is on `feat/discord-notifications`, based on merged main `f2e4e30`. No live validation or installation is implied by passing offline tests.
+Discord and alert-context follow-ups are merged into main. No live validation or
+installation of subsequent acceptance fixes is implied by passing offline tests.
+
+## Acceptance-review corrections
+
+- Verify guest and niced-guest time are counted once, including a guest-dominated
+  workload below the CPU alert boundary and an actual threshold crossing.
+- Verify event lines show unavailable for missing measurements, preserve observed
+  zeros and negative temperatures, and sort episodes with partial data.
+- Validate the service memory/swap limits, OOM policy and deadlines with
+  `systemd-analyze verify`. Measure report latency and peak RSS using a realistic
+  three-day synthetic history with multiple sensors and five process contributors.
+- In a separately authorized, disposable systemd environment, verify effective
+  cgroup limits and exercise memory/deadline exhaustion. Never perform this on the
+  production Proxmox host. Syntax validation does not prove runtime enforcement.
+- Deployment of these corrections remains a separate step: compare installed
+  hashes and effective unit properties, observe fresh samples, and confirm normal
+  scheduled delivery. Previously recorded production evidence remains valid for
+  the deployed baseline; it does not establish deployment of the corrections.
 
 ## Offline gates
 

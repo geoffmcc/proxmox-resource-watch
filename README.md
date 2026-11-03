@@ -84,6 +84,12 @@ Warnings repeat no more than once per 30 minutes for the same alert class while 
 
 The watcher samples rather than tracing every process: short-lived processes can be missed. Active processes near a temperature spike provide **correlation, not proof of cause**. One-core per-process CPU percentages may exceed 100%; host CPU percentage spans all logical cores.
 
+Host CPU accounting includes VM guest time once, because Linux already includes it
+in the user/nice counters. Samples collected before this correction can overstate
+host CPU use on VM workloads. Historical percentages cannot be corrected from the
+stored samples alone; upgrades preserve those records unchanged. Per-process and
+temperature readings are unaffected by this correction.
+
 ## Common commands
 
 ```bash
@@ -105,12 +111,17 @@ The production tools use the Python standard library. The regression suite also 
 
 ```bash
 python3 -m unittest discover -s tests -v
+python3 tests/benchmark_report.py
 bash -n install.sh
 ```
 
 Direct execution runs the same suite: `python3 tests/test_resource_watch.py -v`. Additional checks: `python3 -m py_compile src/*.py tests/*.py`, `shellcheck install.sh`, and `git diff --check`.
 
 The tests use synthetic samples and temporary directories; they do **not** operate on Proxmox, send real email, or change production logs.
+The offline benchmark reads three synthetic days (25,920 samples, nine sensors,
+five processes per sample), generates a report and Discord payload without sending,
+and prints elapsed analysis time and peak RSS. It runs under a 512 MiB address-space
+limit; this checks a realistic workload budget, not systemd/cgroup enforcement.
 
 ## Security and limitations
 
@@ -147,11 +158,40 @@ Historical timezone-naive monitoring records are interpreted in the host's local
 
 Input ceilings are 32 MiB of decompressed data per source, 64 KiB per JSON line and 100,000 accepted records per day. Invalid shapes and nonfinite values are ignored; limit exhaustion is reported as a read/parse error. Reports cap text at 240,000 characters with a truncation notice. These limits trade diagnostic completeness for bounded work. Required historical regular-file reads can still be delayed by slow storage; immediate alerts read only bounded recent tails.
 
+### Service resource limits
+
+The supplied units add per-service cgroup memory limits and disable swap use by
+these services. The limits include child processes, such as mailers and optional
+evidence workers. They require an available systemd memory controller; cgroup v2
+is the intended Proxmox environment. Direct Python invocations do not inherit the
+units' resource limits.
+
+| Service | Memory maximum | Oneshot deadline |
+| --- | --- | --- |
+| Sampler | 128 MiB | Continuous service |
+| Immediate alert | 128 MiB | 120 seconds |
+| Daily report | 512 MiB | 300 seconds |
+| Supplemental follow-up | 256 MiB | 210 seconds |
+| Jellyfin snapshot | 64 MiB | 15 seconds |
+
+Each unit uses `MemorySwapMax=0`, `OOMPolicy=kill` and a ten-second stop timeout.
+If the memory limit is exhausted, the unit fails and its remaining processes are
+killed rather than allowing a partial worker to continue. The sampler retains
+its existing restart-on-failure policy; notification/helper timers invoke their
+services again on their normal schedules. A failed daily report is not immediately
+retried, and a follow-up claimed before failure is not retried. These limits
+trade availability of an oversized job for containment; inspect the unit journal
+for `oom-kill` or timeout failures before considering a host-specific override.
+Input limits do not imply a fixed Python RSS ceiling, and a process stuck in
+uninterruptible kernel I/O may remain beyond a timeout. Historical reports can
+still be incomplete or unavailable after storage failures. No limit makes this a
+hardware thermal safety mechanism.
+
 ## Installation, upgrades and security boundaries
 
 Installation enforces **root:root ownership and mode 0700** on the real log directory, including upgrades. Sampler startup enforces 0700 and refuses a non-root-owned directory when running as root. Existing configuration and log contents are preserved; directory access for other users is deliberately removed. Existing record modes are not rewritten, but directory access is restricted. The installer rejects a symlink log directory. Add new optional settings manually to a preserved configuration. Tests exercise the extracted directory-policy function only in temporary directories; the installer itself is never run in the regression suite.
 
-Commands use argument arrays without a shell. Mail recipients and subjects reject header newlines; process names and report control characters are sanitized. Alert state uses an exclusive mode-0600 temporary file, flush/fsync, and atomic replacement; final-path symlinks are not followed. Systemd hardening is unchanged. Configuration and parent directories must remain administrator-controlled: intermediate directory symlinks, malicious privileged writers, filesystem failures and OS-level blocking cannot be fully defended against here. Existing raw command-line samples can contain secrets; restrict logs and never publish them.
+Commands use argument arrays without a shell. Mail recipients and subjects reject header newlines; process names and report control characters are sanitized. Alert state uses an exclusive mode-0600 temporary file, flush/fsync, and atomic replacement; final-path symlinks are not followed. Existing systemd filesystem restrictions are retained alongside the resource limits above. Configuration and parent directories must remain administrator-controlled: intermediate directory symlinks, malicious privileged writers, filesystem failures and OS-level blocking cannot be fully defended against here. Existing raw command-line samples can contain secrets; restrict logs and never publish them.
 
 The v0.2.0 candidate has been exercised on a Proxmox host, including sampling, manually triggered report delivery and the optional Jellyfin helper under systemd. Validate your own hardware labels, mail routing, ownership and scheduling before relying on it. The tool is observational and is not a hardware thermal safety mechanism.
 

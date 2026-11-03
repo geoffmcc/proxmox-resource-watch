@@ -2,6 +2,10 @@
 
 ## [0.2.0] - Unreleased
 
+- Count VM guest CPU time once in host utilization; preserve historical samples without attempting to reconstruct their biased percentages.
+- Show unavailable event peaks for missing CPU/temperature readings while retaining valid zero and negative temperature measurements.
+- Bound installed services with cgroup memory/swap limits, whole-unit OOM handling, and explicit notification deadlines; document failure and retry behavior.
+
 - Add optional bounded context follow-ups about one minute after warning/critical delivery, once per episode and destination, using existing sample/workload evidence in a separate oneshot worker.
 - Keep primary-alert delivery/cooldowns isolated; persist private jobs/attempt markers and explicitly distinguish overlap, correlation and unknown cause.
 

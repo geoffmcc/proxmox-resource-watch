@@ -25,7 +25,8 @@ def read(path):
 
 def cpu_ticks():
     values = [int(x) for x in read("/proc/stat").splitlines()[0].split()[1:]]
-    return sum(values), values[3] + values[4]
+    # guest/guest_nice are already included in user/nice. Count each tick once.
+    return sum(values[:8]), values[3] + values[4]
 
 
 def process_ticks():
