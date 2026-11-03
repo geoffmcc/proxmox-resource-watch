@@ -208,6 +208,12 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(original, result)
         message = report.summary_message('2026-11-03', summary)
         self.assertIn('210.2°F', message['embeds'][0]['description'])
+        text = message['embeds'][0]['description']
+        self.assertIn('📊 COVERAGE', text)
+        self.assertIn('\n\n💻 CPU\n', text)
+        self.assertIn('\n\n🌡️ TEMPERATURE\n', text)
+        self.assertIn('\n\n🔎 MONITORING HEALTH\n', text)
+        self.assertIn('Clock uncertain: no', text)
         self.assertEqual(summary['thermal'], {'warning':1, 'critical':1})
         self.assertEqual(summary['sustained_cpu'], 1)
 
