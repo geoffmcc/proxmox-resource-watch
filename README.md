@@ -168,3 +168,80 @@ A separately enabled helper can expose bounded Jellyfin log tails as a root-read
 The optional helper and its timer are installed but not enabled automatically. To use them, configure `PRW_JELLYFIN_CONTAINER_ID` (digits only), `PRW_JELLYFIN_LOG=/var/log/proxmox-resource-watch/jellyfin-context.log` and `PRW_JELLYFIN_MAX_AGE_SECONDS=1800` in the existing environment file; then start the helper and enable `proxmox-jellyfin-export.timer`. It refreshes about every ten minutes. Existing report-service restrictions do not change; the helper is a separate root service with its own filesystem restrictions and a 15-second deadline.
 
 The helper requires the Proxmox cgroup-v2 `/sys/fs/cgroup/lxc/ID/ns/init.scope` layout. Only logs at `/var/log/jellyfin/jellyfinYYYYMMDD.log` and `.log.1` in the container are supported. Missing days, other rotations, a stopped container, slow storage, different container/host dates, or long logs can leave incomplete context. Export failures leave the last snapshot intact; the optional max-age setting makes the report treat an old snapshot as unavailable. Inspect the helper journal for failures. Existing critical alerts do not depend on the helper.
+
+## Optional Discord notifications (v0.2.0 preview)
+
+Discord receives concise warning/critical embeds and a compact daily health summary
+from the existing **07:00 host-local** report service. Email remains the detailed,
+authoritative report. No bot, OAuth, Python packages, or additional service is needed.
+
+1. In Discord, open the target server's text channel settings, then **Integrations →
+   Webhooks → New Webhook**. Choose the channel and copy the webhook URL. You need
+   permission to manage webhooks. Use a regular text channel, not a forum thread.
+2. On the monitoring host, use `sudoedit /etc/default/proxmox-resource-watch` to add:
+
+   ```ini
+   PRW_DISCORD_ENABLED=true
+   PRW_DISCORD_WEBHOOK_URL=<paste the webhook URL here, in the file only>
+   ```
+
+3. Keep this file owned by root with mode **0600**. The installer preserves existing
+   configuration; add these settings manually after an upgrade. Do not put the URL
+   on a command line, in chat, Git, screenshots, diagnostics, or a report.
+4. Test explicitly through a temporary sandbox matching the report service:
+
+   ```bash
+   systemd-run --wait --collect --unit=prw-discord-test \
+     -p EnvironmentFile=/etc/default/proxmox-resource-watch \
+     -p NoNewPrivileges=yes -p ProtectSystem=strict \
+     -p ProtectHome=read-only -p PrivateTmp=yes \
+     /usr/bin/python3 /usr/local/sbin/proxmox-resource-report.py --discord-test
+   ```
+
+   This sends one clearly identified TEST embed, no email, changes no thresholds,
+   and leaves alert cooldowns untouched. Confirm actual receipt in Discord; an API
+   acceptance alone is not human receipt verification.
+
+Email and Discord alerts have separate successful-delivery timestamps in the same
+atomic mode-0600 state file. Legacy email timestamps remain compatible. One failed
+transport cannot suppress the other's attempt or mark it delivered. Each destination
+retains the existing per-alert cooldown and observed recovery rules. Critical
+escalation bypasses warning cooldowns. Email is attempted first (existing 90-second
+mailer timeout); Discord follows with a five-second network timeout. No immediate
+alert runs optional historical/workload analysis.
+
+Failed Discord alerts remain undelivered and are attempted on later checks, with a
+60-second failure backoff for that alert class. An HTTP 429 applies a destination-wide
+backoff using Retry-After (minimum 60 seconds, capped at 24 hours), including critical
+messages because Discord is rate limiting the endpoint. Other warning failures do
+not delay critical escalation. Backoff and cooldown survive checker restarts. There
+is no loop of immediate retries. Delivery acknowledgement lost during a network or
+state-write failure can still lead to a later duplicate; exactly-once delivery cannot
+be guaranteed by incoming webhooks.
+
+The daily summary reuses report statistics, thermal-event iteration and workload
+evidence, plus a cheap CPU-only count. It reports observed availability, missing
+measurements, gaps, CPU activity, peak CPU temperature, and per-sensor thermal
+counts (warning and critical counts may overlap). Missing measurements are unknown,
+not fabricated zeros. Workload evidence describes overlap/correlation, never cause.
+No raw process command lines or workload log lines are sent. Discord daily failure
+is logged without failing a successfully mailed report; it is not automatically
+retried. Manually rerunning the full report sends email again, so use the explicit
+Discord test to troubleshoot instead.
+
+Diagnostics use fixed error categories/status codes and never log webhook URLs or
+response bodies. Requests use validated `https://discord.com/api[/v10]/webhooks/...`
+URLs, TLS verification, no redirects or environment proxies, bounded response reads,
+and server-confirmed message responses. Text is sanitized and length-limited;
+allowed-mentions disables user, role and everyone mentions. The existing systemd
+filesystem restrictions remain unchanged and already permit outbound HTTPS. A host
+network policy must allow Discord HTTPS; do not change firewall policy implicitly.
+
+For failures, inspect `journalctl -u proxmox-resource-alert.service` and
+`journalctl -u proxmox-resource-report.service`. Configuration errors mean the URL
+is missing or does not match the supported format; 400 means Discord rejected the
+payload, 401/403/404 usually means the webhook is invalid or revoked, 429 means rate
+limiting, 5xx or connection failures may be temporary. Check DNS, trusted CA
+certificates and existing egress policy without printing the URL. If leaked, revoke
+the webhook in Discord and replace it securely. To disable only Discord, set
+`PRW_DISCORD_ENABLED=false`; email and collection continue unchanged on the next run.

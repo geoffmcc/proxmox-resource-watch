@@ -29,3 +29,9 @@ PRW_MAILER=mutt
 # PRW_JELLYFIN_CONTAINER_ID=102
 # PRW_JELLYFIN_LOG=/var/log/proxmox-resource-watch/jellyfin-context.log
 # PRW_JELLYFIN_MAX_AGE_SECONDS=1800
+
+# Optional independent Discord channel. Existing installations default to disabled.
+# Incoming webhook from Discord channel Settings > Integrations > Webhooks.
+# Keep this file root:root 0600. Never paste the URL into logs or bug reports.
+PRW_DISCORD_ENABLED=false
+PRW_DISCORD_WEBHOOK_URL=

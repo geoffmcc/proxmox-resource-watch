@@ -26,6 +26,11 @@ import bisect
 import zlib
 import signal
 import heapq
+import importlib.util
+
+_discord_spec = importlib.util.spec_from_file_location("prw_discord", Path(__file__).with_name("prw_discord.py"))
+discord = importlib.util.module_from_spec(_discord_spec)
+_discord_spec.loader.exec_module(discord)
 
 LOG_DIR = Path(os.environ.get("PRW_LOG_DIR", "/var/log/proxmox-resource-watch"))
 LEGACY = Path("/var/log/proxmox-resource-watch.jsonl")
@@ -557,8 +562,10 @@ def events(rows):
     return sorted(groups, key=lambda e: (e["cpu_peak"], e["temp_peak"]), reverse=True)
 
 
-def report(day, rows, errors, context_rows=None):
+def report(day, rows, errors, context_rows=None, summary=None):
     rows = normalize_rows(rows)
+    if summary is not None:
+        summary.update(samples=len(rows), errors=errors, clock_uncertain=rows.clock_uncertain)
     title = f"Proxmox Resource Report | {socket.gethostname()} | {day}"
     out = [title, "=" * len(title), "", f"Samples: {len(rows)} (expected ~{86400 // INTERVAL})"]
     if rows.clock_uncertain:
@@ -574,6 +581,9 @@ def report(day, rows, errors, context_rows=None):
     out += [f"Coverage: {timestamps[0]:%H:%M:%S} to {timestamps[-1]:%H:%M:%S} (record timestamps)",
             f"Sampling gaps > {INTERVAL * 2.5:g}s: {len(gaps)}", ""]
     cpu = [r["host_cpu_busy_percent"] for _, r in rows if isinstance(r.get("host_cpu_busy_percent"), (int, float))]
+    if summary is not None:
+        summary.update(cpu=fmt_stats(cpu, "%"), gaps=len(gaps), first=timestamps[0].isoformat(), last=timestamps[-1].isoformat(),
+                       cpu_missing=len(rows)-len(cpu))
     gpu = [r["gpu_busy_percent"] for _, r in rows if isinstance(r.get("gpu_busy_percent"), (int, float))]
     out += ["RESOURCE SUMMARY", "----------------", "", f"Host CPU: {fmt_stats(cpu, '%')}",
             f"GPU busy: {fmt_stats(gpu, '%')}"]
@@ -596,6 +606,10 @@ def report(day, rows, errors, context_rows=None):
     out += [f"  {name}: avg {temp_format(statistics.mean(values))}, "
             f"min {temp_format(min(values))}, max {temp_format(max(values))}"
             for name, values in sorted(sensor_values.items())] or ["  Unavailable"]
+    if summary is not None:
+        peaks = [max(v) for k, v in sensor_values.items() if is_cpu_sensor(k)]
+        summary["peak"] = temp_format(max(peaks)) if peaks else "unavailable"
+        summary["temperature_samples"] = sum(any(is_cpu_sensor(k) for k in r["temperatures_c"]) for _, r in rows)
     all_peaks = [(max(values), name) for name, values in sensor_values.items()]
     out += ["", "PEAK TEMPERATURE AND ASSESSMENT", "-------------------------------", ""]
     if all_peaks:
@@ -630,6 +644,8 @@ def report(day, rows, errors, context_rows=None):
             "----------------------------------------------------------", ""]
     found = events(rows)
     sustained = [e for e in found if e["samples"] * INTERVAL >= SUSTAINED_SECONDS]
+    if summary is not None:
+        summary["sustained_cpu"] = sustained_cpu_count(rows)
     brief = [e for e in found if e["samples"] * INTERVAL < SUSTAINED_SECONDS]
     def append_events(items, limit):
         for index, event in enumerate(items[:limit]):
@@ -660,16 +676,26 @@ def report(day, rows, errors, context_rows=None):
             out.append(f"  {start:%H:%M:%S} to {end:%H:%M:%S}: {seconds:.0f}s")
     out += ["", "CPU TEMPERATURE EVENTS", "----------------------"]
     event_count = 0
+    thermal_counts = collections.Counter()
     def relevant_events():
         nonlocal event_count
         for event in iter_temperature_events(context_rows if context_rows is not None else rows):
             if event["start"].date().isoformat() <= day <= event["end"].date().isoformat():
                 event_count += 1
+                thermal_counts[event["level"]] += 1
                 yield event
     selected = heapq.nlargest(MAX_EVENTS, relevant_events(), key=lambda e: e["peak"])
     out.append(f"Events: {event_count}; showing at most {MAX_EVENTS} by peak")
     evidence = collect_evidence(min(e["start"] for e in selected), max(e["last_hot"] for e in selected)) if selected else ([], [])
+    if summary is not None:
+        summary.update(thermal=dict(thermal_counts), context=[])
     for event in selected:
+        if summary is not None:
+            for line in workload_evidence(event['start'], event['last_hot'], evidence, event['hot_windows']):
+                if line.startswith(("Confirmed workload overlap:", "Possible workload correlation:")):
+                    label = line.split(';')[0]
+                    if label not in summary['context'] and len(summary['context']) < 4:
+                        summary['context'].append(label)
         out.append("")
         out.extend(event_lines(event, evidence=evidence))
     out += ["", "NOTES", "-----", "",
@@ -709,13 +735,79 @@ def deliver(subject, body, recipient, mailer):
         subprocess.run(cmd, input=message, text=True, check=True, timeout=90)
 
 
+def sustained_cpu_count(rows):
+    """Cheap CPU-only pass; no repeated process, thermal or workload analysis."""
+    count = duration = 0
+    last = None
+    for stamp, row in rows:
+        cpu = row.get('host_cpu_busy_percent')
+        if last is not None and (stamp-last).total_seconds() > INTERVAL*2.5:
+            count += duration >= SUSTAINED_SECONDS
+            duration = 0
+        if finite(cpu) and cpu >= CPU_THRESHOLD:
+            duration += INTERVAL
+        else:
+            count += duration >= SUSTAINED_SECONDS
+            duration = 0
+        last = stamp
+    return count + (duration >= SUSTAINED_SECONDS)
+
+
+def summary_message(day, summary):
+    parts = [f"Samples: {summary['samples']} / ~{86400 // INTERVAL}; read/parse errors: {summary['errors']}"]
+    if not summary['samples']:
+        parts.append("Monitoring data unavailable; CPU, temperatures and event counts unknown.")
+    else:
+        thermal = (f"warning {summary['thermal'].get('warning', 0)}, critical {summary['thermal'].get('critical', 0)}"
+                   if summary['temperature_samples'] else "unknown (CPU temperature unavailable)")
+        sustained = str(summary['sustained_cpu']) if summary['cpu_missing'] < summary['samples'] else "unknown (CPU unavailable)"
+        parts += [f"Coverage: {summary['first']} to {summary['last']}",
+                  f"Host CPU: {summary['cpu']}; missing CPU samples: {summary['cpu_missing']}",
+                  f"Peak CPU temperature: {summary['peak']}",
+                  f"Observed thermal episodes per sensor: {thermal} (overlap possible); missing temperature samples: {summary['samples']-summary['temperature_samples']}",
+                  f"Sustained CPU episodes ≥ {CPU_THRESHOLD:g}% for ~{SUSTAINED_SECONDS}s: {sustained} (observed only)",
+                  f"Sampling gaps: {summary['gaps']}; clock uncertain: {summary['clock_uncertain']}"]
+        if summary['context']:
+            parts.append("Workloads in selected thermal-event window (correlation only): " + ", ".join(summary['context']))
+    return discord.payload(f"Daily health | {socket.gethostname()} | {day}", "\n".join(parts), 0x3498DB)
+
+
+def send_report(subject, body, mailer, day, summary):
+    mail_error = None
+    try:
+        deliver(subject, body, os.environ.get("PRW_REPORT_TO", ""), mailer)
+    except Exception as exc:
+        mail_error = exc
+    discord_error = None
+    if discord.enabled():
+        try:
+            discord_error, _ = discord.send(summary_message(day, summary))
+        except Exception:
+            discord_error = "Discord summary failed"
+    if discord_error:
+        print(discord_error, file=sys.stderr)
+    if mail_error:
+        raise mail_error
+    # Optional Discord failure does not fail a successfully mailed report.
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--discord-test", action="store_true", help="Send one identified Discord test only; no email or threshold changes")
     parser.add_argument("--date", help="Calendar day YYYY-MM-DD (default yesterday)")
     parser.add_argument("--send", action="store_true", help="Send via selected mailer; default prints report")
     parser.add_argument("--mailer", choices=["auto", "mutt", "sendmail"],
                         default=os.environ.get("PRW_MAILER", "auto"))
     args = parser.parse_args()
+    if args.discord_test:
+        if not discord.enabled():
+            raise ValueError("Discord is disabled")
+        error, _ = discord.send(discord.payload("TEST — Resource Watch",
+            f"Explicit delivery test for {socket.gethostname()}; no real alert condition. Observed {dt.datetime.now().astimezone().isoformat()}", 0x3498DB))
+        if error:
+            raise RuntimeError(error)
+        print("Discord test accepted; confirm receipt in the configured channel.")
+        return
     if INTERVAL < 1 or SUSTAINED_SECONDS < 1 or not 0 < CPU_WARNING_C < CPU_CRITICAL_C:
         raise ValueError("Invalid interval, duration, or temperature thresholds")
     day = args.date or (dt.datetime.now().astimezone().date() - dt.timedelta(days=1)).isoformat()
@@ -724,9 +816,10 @@ def main():
     previous, previous_errors = rows_for((dt.date.fromisoformat(day) - dt.timedelta(days=1)).isoformat())
     following, following_errors = rows_for((dt.date.fromisoformat(day) + dt.timedelta(days=1)).isoformat())
     context = combine_rows(previous, rows, following)
-    subject, body = report(day, rows, errors + previous_errors + following_errors, context)
+    summary = {} if args.send and discord.enabled() else None
+    subject, body = report(day, rows, errors + previous_errors + following_errors, context, summary)
     if args.send:
-        deliver(subject, body, os.environ.get("PRW_REPORT_TO", ""), args.mailer)
+        send_report(subject, body, args.mailer, day, summary)
     else:
         print(body, end="")
 
