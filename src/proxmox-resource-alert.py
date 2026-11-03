@@ -21,9 +21,7 @@ CPU_WARNING_PERCENT = float(os.environ.get("PRW_ALERT_CPU_PERCENT", "80"))
 CPU_WARNING_SECONDS = int(os.environ.get("PRW_ALERT_CPU_SECONDS", "300"))
 COOLDOWN_SECONDS = int(os.environ.get("PRW_ALERT_COOLDOWN_SECONDS", "1800"))
 
-spec = importlib.util.spec_from_file_location("prw_report", "/usr/local/sbin/proxmox-resource-report.py")
-if not Path(spec.origin).is_file():
-    spec = importlib.util.spec_from_file_location("prw_report", str(Path(__file__).with_name("proxmox-resource-report.py")))
+spec = importlib.util.spec_from_file_location("prw_report", str(Path(__file__).with_name("proxmox-resource-report.py")))
 reporter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reporter)
 
@@ -150,6 +148,19 @@ def format_alert(event):
     return title, re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "?", "\n".join(lines))
 
 
+def discord_alert(event):
+    cpu = event['row'].get('host_cpu_busy_percent')
+    cpu_text = f"{cpu:.1f}%" if reporter.finite(cpu) else "unavailable"
+    threshold = (f"Immediate ≥ {reporter.temp_format(CRITICAL_C)}" if event['key'] == 'temp_critical'
+                 else event['reason'])
+    description = (f"Host: {__import__('socket').gethostname()}\nAlert: {event['key']}\n"
+                   f"Sensor: {event['sensor'] or 'unavailable'}\n"
+                   f"Temperature: {reporter.temp_format(event['temperature']) if event['temperature'] is not None else 'unavailable'}\n"
+                   f"Host CPU: {cpu_text}\nObserved: {event['stamp'].isoformat()}\n{threshold}")
+    return reporter.discord.payload(f"{event['severity']} — Resource Watch", description,
+                                   0xE74C3C if event['severity'] == 'CRITICAL' else 0xE67E22)
+
+
 def update_recovery(now, rows, state):
     """Re-arm only from a continuous observed cool suffix, including skipped checks."""
     responsible = state.get("temp_sensors", [])
@@ -179,6 +190,8 @@ def update_recovery(now, rows, state):
             keys = ("temp_warning", "temp_critical") if group == "temp" else ("cpu_warning",)
             for alert_key in keys:
                 state.pop(alert_key, None)
+                state.pop("discord_" + alert_key, None)
+                state.pop("discord_retry_" + alert_key, None)
             if group == "temp":
                 state.pop("temp_sensors", None)
 
@@ -208,7 +221,7 @@ def diagnose_monitoring(now, rows, state):
 
 
 def main():
-    if not os.environ.get("PRW_REPORT_TO"):
+    if not os.environ.get("PRW_REPORT_TO") and not reporter.discord.enabled():
         raise ValueError("PRW_REPORT_TO is required for immediate alerts")
     if not 0 < WARNING_C < CRITICAL_C or INTERVAL < 1 or COOLDOWN_SECONDS < 1 or WARNING_SECONDS < 1 or CPU_WARNING_SECONDS < 1 or not 0 < CPU_WARNING_PERCENT <= 100:
         raise ValueError("Invalid alert thresholds or interval")
@@ -236,24 +249,63 @@ def main():
         diagnose_monitoring(now, rows, state)
         save_state(state)
         return
-    last_sent = state.get(event["key"])
-    if last_sent:
+    mail_error = None
+    discord_error = None
+    sent = False
+    # Preserve legacy keys for email; Discord has independent durable timestamps.
+    for destination in ("email", "discord"):
+        if destination == "discord" and not reporter.discord.enabled():
+            continue
+        if destination == "email" and not os.environ.get("PRW_REPORT_TO"):
+            continue
+        key = event["key"] if destination == "email" else "discord_" + event["key"]
         try:
-            if 0 <= (now - reporter.timestamp(last_sent)).total_seconds() < COOLDOWN_SECONDS:
-                diagnose_monitoring(now, rows, state)
-                save_state(state)
-                return
+            elapsed = (now - reporter.timestamp(state.get(key))).total_seconds()
+            if 0 <= elapsed < COOLDOWN_SECONDS:
+                continue
         except (ValueError, TypeError):
             pass
-    title, body = format_alert(event)
-    reporter.deliver(title, body, os.environ["PRW_REPORT_TO"], os.environ.get("PRW_MAILER", "auto"))
+        if destination == "discord":
+            try:
+                if any(now < reporter.timestamp(state.get(k)) for k in
+                       ("discord_retry_after", "discord_retry_" + event["key"]) if state.get(k)):
+                    continue
+            except (ValueError, TypeError):
+                pass
+            try:
+                discord_error, delay = reporter.discord.send(discord_alert(event))
+            except Exception:
+                discord_error, delay = "Discord alert failed", 60
+            if discord_error:
+                retry_key = "discord_retry_after" if discord_error == "Discord HTTP 429" else "discord_retry_" + event["key"]
+                state[retry_key] = (now + dt.timedelta(seconds=delay)).isoformat()
+                continue
+            state.pop("discord_retry_after", None)
+            state.pop("discord_retry_" + event["key"], None)
+        else:
+            try:
+                title, body = format_alert(event)
+                reporter.deliver(title, body, os.environ["PRW_REPORT_TO"], os.environ.get("PRW_MAILER", "auto"))
+            except Exception as exc:
+                mail_error = exc
+                continue
+        state[key] = now.isoformat()
+        sent = True
     if event["key"].startswith("temp_"):
         sensors = {k for k, v in event["row"]["temperatures_c"].items()
                    if reporter.is_cpu_sensor(k) and v >= WARNING_C}
         state["temp_sensors"] = sorted(set(state.get("temp_sensors", [])) | sensors)
-    state[event["key"]] = now.isoformat()
     diagnose_monitoring(now, rows, state)
-    save_state(state)
+    # Keep email-only failure behavior, while persisting partial success/backoff.
+    if sent or reporter.discord.enabled() or mail_error is None:
+        save_state(state)
+    if discord_error:
+        try:
+            print(discord_error, file=sys.stderr)
+        except OSError:
+            pass
+    if mail_error:
+        raise mail_error
 
 
 if __name__ == "__main__":

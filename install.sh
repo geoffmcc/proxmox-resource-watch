@@ -45,7 +45,7 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Python 3.
 [[ -f "$PROJECT_DIR/src/proxmox-resource-watch.py" ]] || fail 'Run installer from the complete repository.'
 
 script_names=(proxmox-resource-watch.py proxmox-resource-report.py proxmox-resource-alert.py
-              proxmox-jellyfin-export.py)
+              proxmox-jellyfin-export.py prw_discord.py)
 unit_names=(proxmox-resource-watch.service proxmox-resource-report.service proxmox-resource-report.timer
             proxmox-resource-alert.service proxmox-resource-alert.timer
             proxmox-jellyfin-export.service proxmox-jellyfin-export.timer)
@@ -110,6 +110,8 @@ for item in "${unit_names[@]}"; do
   backup_if_exists "$UNIT_DST/$item"
   install -o root -g root -m 0644 "$PROJECT_DIR/systemd/$item" "$UNIT_DST/$item"
 done
+backup_if_exists "$CONFIG_DST"
+backup_if_exists "$LOG_DST/alert-state.json"
 preserve_configuration() {
   local source=$1 target=$2
   [[ ! -L $target ]] || fail 'Configuration must not be a symlink.'

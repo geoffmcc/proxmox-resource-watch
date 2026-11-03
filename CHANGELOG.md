@@ -2,6 +2,10 @@
 
 ## [0.2.0] - Unreleased
 
+- Add optional Discord warning/critical embeds and a compact summary through the existing daily timer; preserve email formatting and independent per-destination cooldowns/recovery.
+- Bound webhook delivery, suppress mentions, redact URLs, persist alert failure backoff, and add offline transport/partial-failure regressions.
+- Back up preserved configuration and alert state during installation; keep systemd restrictions unchanged.
+
 - Add an optional sandboxed LXC Jellyfin log snapshot helper and conservative support for loggerless task completions.
 
 - Preserve clock-order uncertainty and sample discontinuity markers; never confirm historical recovery across uncertain ordering.
