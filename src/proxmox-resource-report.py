@@ -758,22 +758,20 @@ def sustained_cpu_count(rows):
 
 
 def summary_message(day, summary):
-    parts = [f"Samples: {summary['samples']} / ~{86400 // INTERVAL}; read/parse errors: {summary['errors']}"]
+    parts = [f"📊 COVERAGE\nSamples: {summary['samples']} / ~{86400 // INTERVAL}\nRead/parse errors: {summary['errors']}"]
     if not summary['samples']:
         parts.append("Monitoring data unavailable; CPU, temperatures and event counts unknown.")
     else:
         thermal = (f"warning {summary['thermal'].get('warning', 0)}, critical {summary['thermal'].get('critical', 0)}"
                    if summary['temperature_samples'] else "unknown (CPU temperature unavailable)")
         sustained = str(summary['sustained_cpu']) if summary['cpu_missing'] < summary['samples'] else "unknown (CPU unavailable)"
-        parts += [f"Coverage: {summary['first']} to {summary['last']}",
-                  f"Host CPU: {summary['cpu']}; missing CPU samples: {summary['cpu_missing']}",
-                  f"Peak CPU temperature: {summary['peak']}",
-                  f"Observed thermal episodes per sensor: {thermal} (overlap possible); missing temperature samples: {summary['samples']-summary['temperature_samples']}",
-                  f"Sustained CPU episodes ≥ {CPU_THRESHOLD:g}% for ~{SUSTAINED_SECONDS}s: {sustained} (observed only)",
-                  f"Sampling gaps: {summary['gaps']}; clock uncertain: {summary['clock_uncertain']}"]
+        parts[0] += f"\nFrom: {summary['first']}\nTo: {summary['last']}"
+        parts += [f"💻 CPU\nHost CPU: {summary['cpu']}\nSustained CPU episodes ≥ {CPU_THRESHOLD:g}% for ~{SUSTAINED_SECONDS}s: {sustained} (observed only)",
+                  f"🌡️ TEMPERATURE\nPeak CPU temperature: {summary['peak']}\nObserved thermal episodes per sensor: {thermal} (overlap possible)",
+                  f"🔎 MONITORING HEALTH\nSampling gaps: {summary['gaps']}\nMissing CPU samples: {summary['cpu_missing']}\nMissing temperature samples: {summary['samples']-summary['temperature_samples']}\nClock uncertain: {'yes' if summary['clock_uncertain'] else 'no'}"]
         if summary['context']:
-            parts.append("Workloads in selected thermal-event window (correlation only): " + ", ".join(summary['context']))
-    return discord.payload(f"Daily health | {socket.gethostname()} | {day}", "\n".join(parts), 0x3498DB)
+            parts.append("📋 WORKLOAD CONTEXT\nWorkloads in selected thermal-event window (correlation only):\n" + "\n".join(summary['context']))
+    return discord.payload(f"Daily health | {socket.gethostname()} | {day}", "\n\n".join(parts), 0x3498DB)
 
 
 def send_report(subject, body, mailer, day, summary):
@@ -807,7 +805,7 @@ def main():
         if not discord.enabled():
             raise ValueError("Discord is disabled")
         error, _ = discord.send(discord.payload("TEST — Resource Watch",
-            f"Explicit delivery test for {socket.gethostname()}; no real alert condition. Observed {dt.datetime.now().astimezone().isoformat()}", 0x3498DB))
+            f"🔎 DELIVERY TEST\nHost: {socket.gethostname()}\nObserved: {dt.datetime.now().astimezone().isoformat()}\n\nNo real alert condition.", 0x3498DB))
         if error:
             raise RuntimeError(error)
         print("Discord test accepted; confirm receipt in the configured channel.")

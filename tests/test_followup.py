@@ -187,6 +187,13 @@ class FollowupTests(unittest.TestCase):
         self.assertIn('Confirmed workload overlap',body)
         self.assertIn('Possible workload correlation',body)
         self.assertIn('Cause: unknown',body)
+        discord_body = self.discord.call_args.args[0]['embeds'][0]['description']
+        self.assertIn('🔎 OBSERVATION', discord_body)
+        self.assertIn('\n\n📊 COVERAGE', discord_body)
+        self.assertIn('\n\n💻 CPU', discord_body)
+        self.assertIn('\n\n🌡️ TEMPERATURE', discord_body)
+        self.assertIn('\n\n📋 WORKLOAD CONTEXT', discord_body)
+        self.assertNotIn('🔎 OBSERVATION', body)
 
     def test_mentions_secrets_and_raw_commands_excluded(self):
         self.rows[0][1]['top_processes'][0].update(name='@everyone',cmdline='secret process command')

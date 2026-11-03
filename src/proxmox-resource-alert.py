@@ -158,10 +158,11 @@ def discord_alert(event):
     cpu_text = f"{cpu:.1f}%" if reporter.finite(cpu) else "unavailable"
     threshold = (f"Immediate ≥ {reporter.temp_format(CRITICAL_C)}" if event['key'] == 'temp_critical'
                  else event['reason'])
-    description = (f"Host: {__import__('socket').gethostname()}\nAlert: {event['key']}\n"
-                   f"Sensor: {event['sensor'] or 'unavailable'}\n"
+    description = (f"🚨 ALERT\nHost: {__import__('socket').gethostname()}\nAlert: {event['key']}\n"
+                   f"Observed: {event['stamp'].isoformat()}\n{threshold}\n\n"
+                   f"🌡️ TEMPERATURE\nSensor: {event['sensor'] or 'unavailable'}\n"
                    f"Temperature: {reporter.temp_format(event['temperature']) if event['temperature'] is not None else 'unavailable'}\n"
-                   f"Host CPU: {cpu_text}\nObserved: {event['stamp'].isoformat()}\n{threshold}")
+                   f"\n💻 CPU\nHost CPU: {cpu_text}")
     return reporter.discord.payload(f"{event['severity']} — Resource Watch", description,
                                    0xE74C3C if event['severity'] == 'CRITICAL' else 0xE67E22)
 
