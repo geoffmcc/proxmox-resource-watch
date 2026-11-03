@@ -1,6 +1,6 @@
 [project]
 name = "proxmox-resource-watch"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lightweight Proxmox resource sampling and email alerts"
 requires-python = ">=3.10"
 license = "MIT"

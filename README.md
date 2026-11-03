@@ -1,6 +1,6 @@
 # Proxmox Resource Watch
 
-**v0.1.0 — Initial public preview**
+**v0.2.0 — Preview, pending independent review**
 
 A small Python 3 monitoring utility for Proxmox VE (or other Debian/Ubuntu Linux hosts). It samples host resources every 10 seconds, retains 30 days of daily JSONL logs, emails a readable daily summary, and checks for high-temperature/high-CPU alerts. It **does not** control fans or automatically shut down virtual machines, containers, or the host.
 
@@ -108,6 +108,8 @@ python3 -m unittest discover -s tests -v
 bash -n install.sh
 ```
 
+Direct execution runs the same suite: `python3 tests/test_resource_watch.py -v`. Additional checks: `python3 -m py_compile src/*.py tests/*.py`, `shellcheck install.sh`, and `git diff --check`.
+
 The tests use synthetic samples and temporary directories; they do **not** operate on Proxmox, send real email, or change production logs.
 
 ## Security and limitations
@@ -122,3 +124,47 @@ The tests use synthetic samples and temporary directories; they do **not** opera
 ## License
 
 MIT; see [LICENSE](LICENSE). Initial public preview, provided as-is.
+
+## Temperature events and workload evidence (v0.2.0)
+
+Immediate temperature mail uses fresh required monitoring data and a minimal message. It never reads Jellyfin logs, queries the journal, rereads full history, or reconstructs diagnostic events before delivery. Invalid optional integration settings cannot suppress critical mail. Mail transport itself has a 90-second timeout; delivery still requires working storage, scheduling and a mail system. Cooldowns remain per alert class; escalation is independent of warning cooldown.
+
+Daily reports reconstruct warning and critical episodes separately for each exact CPU sensor identity. Recovery requires consecutive observations from that sensor below threshold minus 3°C for at least 60 seconds, without a gap exceeding 2.5 sampling intervals. Missing or renamed sensors and gaps terminate the segment with recovery **unknown**. An open segment is **unresolved**, and only an observed recovery is **recovered**. Immediate re-arming checks every retained observation in a continuous cool suffix of at least 60 seconds, including samples between checker invocations. Missing or hot observations, sampling gaps, insufficient retained history, and uncertain clock order prevent early re-arming. The responsible sensors and all visible CPU sensors must remain below the warning recovery margin. Old state without sensor identities requires a new observed hot episode to establish identity; it cannot establish recovery from unrelated readings.
+
+The last hot observation and recovery-confirmation timestamp are separate. Thermal duration sums intervals whose endpoints are both hot, capped at the configured cadence. A single hot observation has zero confirmed interval. Recovery time and missing time are excluded. Workloads starting after the last hot observation, or entirely inside cooling dips, are excluded from hot-period overlap. Context from adjacent days can connect episodes across midnight; this is a bounded observation window, not a guarantee that the true start or finish is present.
+
+Duplicate instants are merged before analysis: each sensor retains its highest valid finite temperature, and each process identity retains its highest CPU observation. Distinct sensors and processes are retained. Identical duplicates add no duration. Conflicting records cannot prove cooling. Out-of-order records are sorted; backward clock corrections that reuse an instant become conflicting duplicates. Each source is checked for backward timestamps before sorting. Backward order is conservatively treated as uncertain, including delayed records: recovery is never confirmed anywhere in the affected analysis window. New samples also mark a wall/monotonic time discrepancy greater than two seconds with `clock_discontinuity`. The flag survives normalization and adjacent-day reconstruction. Durations across clock changes remain estimates, not elapsed-time guarantees.
+
+Process core-seconds integrate the preceding measurement interval, clipped to confirmed hot intervals within the first and last hot timestamps. Cooling dips are excluded. New samples include monotonic `sample_seconds` and process `start_ticks` to separate PID reuse. Overlapping intervals are clipped at the previous available timestamp. Legacy records use at most one configured sampling interval; missing time is not filled. Only hot observations contribute, and a single-sample episode has no integration window. CPU activity within those intervals is assumed uniform, so boundary clipping is approximate. Top-five sampling misses short or lower-ranked processes. Legacy PID reuse can still merge unrelated processes. Recovery samples are excluded; attribution is incomplete and does not prove causation.
+
+Canonical rows are normalized once and reused internally. Completed events are streamed into a selection retaining at most 100 completed events; active episodes and their hot-sample references remain proportional to the input history. Evidence is fetched once per report, reused for at most 100 thermal events selected by peak, and printed at most 10 lines per event. A journal query uses a 24-hour margin around the selected window, at most 1,000 records, a three-second command timeout, and at most 1 MiB of parsed output. Optional processing runs in a separate worker with a five-second response deadline; journal output has a 2 MiB file ceiling. Slow optional storage cannot hold the report indefinitely. Worker termination cannot immediately reclaim a process stuck in kernel I/O; the parent does not wait indefinitely for it.
+
+The journal query requests structured JSON records, checking the program identity, PID, timestamp, and message. The parser also accepts the existing short-ISO text format. Backup parsing accepts explicit `vzdump[PID]: INFO: Starting Backup of VM/CT ID`, `Finished Backup of VM/CT ID`, and explicit failure records. Only full unique UPID task starts and ends are paired for **confirmed workload overlap**. Repeated UPID starts are ambiguous. PID/VM records remain separate incomplete evidence for **possible workload correlation**, because these identities can be reused; they never create a paired interval. Other Proxmox/PBS formats remain unknown rather than creating guessed intervals. PBS and Jellyfin are never required.
+
+Jellyfin evidence is disabled unless `PRW_JELLYFIN_LOG` names an absolute, readable regular file under the existing systemd sandbox. Final symlinks and special files are rejected using nonblocking open and descriptor type checks. Only the last 1 MiB is read, dropping a partial first line. TaskManager completion records with or without a thread-number field, and with quoted or unquoted task names, for Audio Normalization and media-library scans with explicit durations can establish **confirmed workload overlap**. A matching Jellyfin completion line that omits its logger name is reported as **possible workload correlation**. Arbitrary keyword messages and name-only start/completion pairs cannot. Rotation, unsupported formats and incomplete tasks leave activity unknown. No guest commands or raw workload lines enter email. Confirmed overlap establishes timing only.
+
+Historical timezone-naive monitoring records are interpreted in the host's local timezone at the record date, including historical daylight-saving rules available on that host. Explicit offsets are honored and mixed records can be compared. Ambiguous fall-back local times use the platform's default fold; original offset information cannot be recovered. Naive workload timestamps use the analysis window's offset, so verify source timezone settings, especially around DST. Corrupt/truncated gzip streams retain already decoded records and report read errors.
+
+Input ceilings are 32 MiB of decompressed data per source, 64 KiB per JSON line and 100,000 accepted records per day. Invalid shapes and nonfinite values are ignored; limit exhaustion is reported as a read/parse error. Reports cap text at 240,000 characters with a truncation notice. These limits trade diagnostic completeness for bounded work. Required historical regular-file reads can still be delayed by slow storage; immediate alerts read only bounded recent tails.
+
+## Installation, upgrades and security boundaries
+
+Installation enforces **root:root ownership and mode 0700** on the real log directory, including upgrades. Sampler startup enforces 0700 and refuses a non-root-owned directory when running as root. Existing configuration and log contents are preserved; directory access for other users is deliberately removed. Existing record modes are not rewritten, but directory access is restricted. The installer rejects a symlink log directory. Add new optional settings manually to a preserved configuration. Tests exercise the extracted directory-policy function only in temporary directories; the installer itself is never run in the regression suite.
+
+Commands use argument arrays without a shell. Mail recipients and subjects reject header newlines; process names and report control characters are sanitized. Alert state uses an exclusive mode-0600 temporary file, flush/fsync, and atomic replacement; final-path symlinks are not followed. Systemd hardening is unchanged. Configuration and parent directories must remain administrator-controlled: intermediate directory symlinks, malicious privileged writers, filesystem failures and OS-level blocking cannot be fully defended against here. Existing raw command-line samples can contain secrets; restrict logs and never publish them.
+
+The v0.2.0 candidate has been exercised on a Proxmox host, including sampling, manually triggered report delivery and the optional Jellyfin helper under systemd. Validate your own hardware labels, mail routing, ownership and scheduling before relying on it. The tool is observational and is not a hardware thermal safety mechanism.
+
+## Monitoring health and release verification
+
+The alert checker records `monitoring_health` in its existing state file and logs health transitions to stderr, captured by the systemd journal. No usable recent records, stale samples, missing CPU temperatures, disappearance of responsible sensors, unavailable host CPU usage, and uncertain clock ordering are explicitly reported. A later healthy sample logs availability again. This does not send additional mail or alter temperature cooldowns; diagnostic-output failure cannot suppress a critical alert. If the checker itself cannot start, its service failure must be monitored externally.
+
+The workload fixtures in `tests/fixtures/workloads.json` are synthetic and sanitized; they contain no live-system records. Runtime validation on Python 3.10 and any remaining deployment acceptance checks remain release gates; configured CI checks do not count as completed runs. See `docs/RELEASE_CHECKLIST.md`.
+
+## Optional Jellyfin LXC log snapshot
+
+A separately enabled helper can expose bounded Jellyfin log tails as a root-readable host file without executing a command in the container. It resolves a systemd-based container's init process using read-only cgroup-v2 metadata and reads yesterday's and today's Jellyfin dated files through its root filesystem. It accepts the current `.log` and rotated `.log.1` forms, at most 512 KiB per day, and atomically replaces a mode-0400 snapshot. The snapshot contains raw Jellyfin logs and can include sensitive information; it must remain in the root-owned mode-0700 monitoring directory. No Jellyfin or LXC configuration is modified.
+
+The optional helper and its timer are installed but not enabled automatically. To use them, configure `PRW_JELLYFIN_CONTAINER_ID` (digits only), `PRW_JELLYFIN_LOG=/var/log/proxmox-resource-watch/jellyfin-context.log` and `PRW_JELLYFIN_MAX_AGE_SECONDS=1800` in the existing environment file; then start the helper and enable `proxmox-jellyfin-export.timer`. It refreshes about every ten minutes. Existing report-service restrictions do not change; the helper is a separate root service with its own filesystem restrictions and a 15-second deadline.
+
+The helper requires the Proxmox cgroup-v2 `/sys/fs/cgroup/lxc/ID/ns/init.scope` layout. Only logs at `/var/log/jellyfin/jellyfinYYYYMMDD.log` and `.log.1` in the container are supported. Missing days, other rotations, a stopped container, slow storage, different container/host dates, or long logs can leave incomplete context. Export failures leave the last snapshot intact; the optional max-age setting makes the report treat an old snapshot as unavailable. Inspect the helper journal for failures. Existing critical alerts do not depend on the helper.

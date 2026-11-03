@@ -1,0 +1,15 @@
+[Unit]
+Description=Snapshot Jellyfin log tails from the container for Resource Watch
+After=local-fs.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/proxmox-resource-watch
+ExecStart=/usr/bin/python3 /usr/local/sbin/proxmox-jellyfin-export.py
+UMask=0077
+TimeoutStartSec=15s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/proxmox-resource-watch

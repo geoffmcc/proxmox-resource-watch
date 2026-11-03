@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Check recent samples for temperature/CPU alerts; mail with durable cooldowns."""
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-import collections
 import datetime as dt
 import importlib.util
 import json
 import os
 from pathlib import Path
 import sys
+import tempfile
+import re
 
 LOG_DIR = Path(os.environ.get("PRW_LOG_DIR", "/var/log/proxmox-resource-watch"))
 STATE = LOG_DIR / "alert-state.json"
@@ -28,24 +29,23 @@ spec.loader.exec_module(reporter)
 
 
 def tail_rows(path, limit=160 * 1024):
-    if not path.exists():
+    try:
+        with reporter.regular_open(path) as stream:
+            size = os.fstat(stream.fileno()).st_size
+            start = max(0, size - limit)
+            stream.seek(start)
+            data = stream.read(limit)
+    except OSError:
         return []
-    with path.open("rb") as stream:
-        stream.seek(0, 2)
-        size = stream.tell()
-        start = max(0, size - limit)
-        stream.seek(start)
-        data = stream.read()
     if start:
         data = data.partition(b"\n")[2]
     result = []
     for line in data.splitlines():
         try:
             row = json.loads(line)
-            timestamp = dt.datetime.fromisoformat(row["time"])
-            if timestamp.tzinfo is not None:
-                result.append((timestamp, row))
-        except (ValueError, KeyError, TypeError):
+            timestamp = reporter.timestamp(row["time"])
+            result.append((timestamp, row))
+        except (ValueError, KeyError, TypeError, RecursionError):
             continue
     return result
 
@@ -55,12 +55,13 @@ def recent(now):
     for day in (now.date() - dt.timedelta(days=1), now.date()):
         all_rows.extend(tail_rows(LOG_DIR / f"{day}.jsonl"))
     cutoff = now - dt.timedelta(seconds=max(CPU_WARNING_SECONDS, WARNING_SECONDS, 60) + 60)
-    return [(t, row) for t, row in sorted(all_rows) if cutoff <= t <= now]
+    normalized = reporter.normalize_rows(all_rows)
+    return reporter.NormalizedRows([(t, row) for t, row in normalized if cutoff <= t <= now], normalized.clock_uncertain)
 
 
 def top_cpu_temperature(row):
     values = [(v, name) for name, v in (row.get("temperatures_c") or {}).items()
-              if isinstance(v, (float, int)) and reporter.is_cpu_sensor(name)]
+              if reporter.finite(v) and reporter.is_cpu_sensor(name)]
     return max(values, default=(None, None))
 
 
@@ -79,24 +80,32 @@ def consecutive_duration(rows, predicate):
 
 def load_state():
     try:
-        state = json.loads(STATE.read_text())
+        with reporter.regular_open(STATE) as stream:
+            state = json.loads(stream.read(65536))
         if isinstance(state, dict):
-            return state
-    except (OSError, ValueError):
+            return {k: v for k, v in state.items() if isinstance(v, str) or
+                    (k == "temp_sensors" and isinstance(v, list) and all(isinstance(n, str) for n in v))}
+    except (OSError, ValueError, RecursionError):
         pass
     return {}
 
 
 def save_state(state):
-    temp = STATE.with_suffix(".json.tmp")
-    with temp.open("w", encoding="utf-8") as out:
-        json.dump(state, out, separators=(",", ":"))
-        out.write("\n")
-    os.chmod(temp, 0o600)
-    temp.replace(STATE)
+    fd, name = tempfile.mkstemp(prefix=".alert-state-", dir=STATE.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump(state, out, separators=(",", ":"))
+            out.write("\n")
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, STATE)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
 
 
 def candidate(now, rows):
+    rows = reporter.normalize_rows(rows)
     if not rows or (now - rows[-1][0]).total_seconds() > INTERVAL * 3:
         return None
     last_stamp, last = rows[-1]
@@ -132,74 +141,118 @@ def format_alert(event):
              f"Host CPU usage: {row.get('host_cpu_busy_percent', 'unavailable')}%"]
     if event["temperature"] is not None:
         lines.append(f"CPU sensor: {event['sensor']} — {reporter.temp_format(event['temperature'])}")
-    current = row.get("top_processes") or []
-    earlier = [(t, r) for t, r in event["rows"] if 0 < (event["stamp"] - t).total_seconds() <= 30]
-    before = collections.defaultdict(float)
-    for _, older in earlier:
-        for proc in older.get("top_processes") or []:
-            name = proc.get("name", "unknown")
-            before[name] = max(before[name], proc.get("cpu_percent_one_core", 0))
-    lines += ["", "Processes active immediately before (last 30s):"]
-    lines.extend(f"  {name}: {pct:.1f}% of one core" for name, pct in
-                 sorted(before.items(), key=lambda pair: pair[1], reverse=True)[:5])
-    if not before:
-        lines.append("  Unavailable")
-    lines += ["", "Processes observed during latest sample:"]
-    lines.extend(f"  {p.get('name', 'unknown')}: {p.get('cpu_percent_one_core', 0):.1f}% of one core"
-                 for p in current[:5])
-    if not current:
-        lines.append("  Unavailable")
-    lines += ["", "Review current load, cooling and recent workloads.",
+    lines += ["", "Optional process and workload diagnostics are deferred to the daily report."]
+    lines += ["", "Only sampled top processes are available; CPU contributors are estimated.",
+              "Review current load, cooling and recent workloads.",
               "This alert does not shut down or modify the host.",
               "Observed processes are correlations, not proven causes.",
               "A warning/critical threshold is not the same as the hardware's published Tjmax.", ""]
-    return title, "\n".join(lines)
+    return title, re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "?", "\n".join(lines))
+
+
+def update_recovery(now, rows, state):
+    """Re-arm only from a continuous observed cool suffix, including skipped checks."""
+    responsible = state.get("temp_sensors", [])
+    def cool_temp(row):
+        values = row["temperatures_c"]
+        peak, _ = top_cpu_temperature(row)
+        return (bool(responsible) and peak is not None and peak < WARNING_C - 3
+                and all(reporter.finite(values.get(name)) and values[name] < WARNING_C - 3
+                        for name in responsible))
+    def cool_cpu(row):
+        value = row.get("host_cpu_busy_percent")
+        return reporter.finite(value) and value < CPU_WARNING_PERCENT - 10
+    for group, predicate in (("temp", cool_temp), ("cpu", cool_cpu)):
+        key = group + "_recovery_since"
+        state.pop(key, None)
+        if rows.clock_uncertain or not rows or not 0 <= (now-rows[-1][0]).total_seconds() <= INTERVAL*3:
+            continue
+        first = last = rows[-1][0]
+        for stamp, row in reversed(rows):
+            if (last-stamp).total_seconds() > INTERVAL*2.5 or not predicate(row):
+                break
+            first = last = stamp
+        if not predicate(rows[-1][1]):
+            continue
+        state[key] = first.isoformat()
+        if (rows[-1][0]-first).total_seconds() >= 60:
+            keys = ("temp_warning", "temp_critical") if group == "temp" else ("cpu_warning",)
+            for alert_key in keys:
+                state.pop(alert_key, None)
+            if group == "temp":
+                state.pop("temp_sensors", None)
+
+
+def diagnose_monitoring(now, rows, state):
+    """Journal-visible health transitions; never send health mail ahead of critical mail."""
+    if not rows:
+        health = "unavailable: no usable recent monitoring samples"
+    elif not 0 <= (now-rows[-1][0]).total_seconds() <= INTERVAL*3:
+        health = "unavailable: monitoring samples are stale"
+    elif top_cpu_temperature(rows[-1][1])[0] is None:
+        health = "degraded: CPU temperature unavailable"
+    elif any(name not in rows[-1][1]["temperatures_c"] for name in state.get("temp_sensors", [])):
+        health = "degraded: responsible CPU sensor unavailable; recovery unknown"
+    elif not reporter.finite(rows[-1][1].get("host_cpu_busy_percent")):
+        health = "degraded: host CPU usage unavailable"
+    elif rows.clock_uncertain:
+        health = "degraded: clock ordering uncertain"
+    else:
+        health = "available"
+    if state.get("monitoring_health") != health:
+        try:
+            print("Resource Watch monitoring health: " + health, file=sys.stderr)
+        except OSError:
+            pass  # Diagnostic output must not suppress critical delivery.
+    state["monitoring_health"] = health
 
 
 def main():
     if not os.environ.get("PRW_REPORT_TO"):
         raise ValueError("PRW_REPORT_TO is required for immediate alerts")
-    if not 0 < WARNING_C < CRITICAL_C or INTERVAL < 1 or COOLDOWN_SECONDS < 1:
+    if not 0 < WARNING_C < CRITICAL_C or INTERVAL < 1 or COOLDOWN_SECONDS < 1 or WARNING_SECONDS < 1 or CPU_WARNING_SECONDS < 1 or not 0 < CPU_WARNING_PERCENT <= 100:
         raise ValueError("Invalid alert thresholds or interval")
     now = dt.datetime.now().astimezone()
-    rows = recent(now)
+    rows = reporter.normalize_rows(recent(now))
     state = load_state()
-    if rows and (now - rows[-1][0]).total_seconds() <= INTERVAL * 3:
-        latest = rows[-1][1]
-        peak, _ = top_cpu_temperature(latest)
-        cpu = latest.get("host_cpu_busy_percent")
-        # Require one full minute below a hysteresis margin before re-arming.
-        # A genuinely new episode may then alert even within the cooldown.
-        for group, normal in (("temp", peak is not None and peak < WARNING_C - 3),
-                              ("cpu", isinstance(cpu, (int, float)) and cpu < CPU_WARNING_PERCENT - 10)):
-            key = f"{group}_recovery_since"
-            if normal:
-                if key not in state:
-                    state[key] = now.isoformat()
-                else:
-                    try:
-                        if (now - dt.datetime.fromisoformat(state[key])).total_seconds() >= 60:
-                            keys = ("temp_warning", "temp_critical") if group == "temp" else ("cpu_warning",)
-                            for alert_key in keys:
-                                state.pop(alert_key, None)
-                    except (ValueError, TypeError):
-                        state[key] = now.isoformat()
-            else:
-                state.pop(key, None)
-    save_state(state)
+    previous_check = state.get("last_check")
+    try:
+        elapsed = (now - reporter.timestamp(previous_check)).total_seconds()
+        if elapsed < 0:
+            rows.clock_uncertain = True
+        if not 0 <= elapsed <= INTERVAL * 3:
+            state.pop("temp_recovery_since", None)
+            state.pop("cpu_recovery_since", None)
+    except (ValueError, TypeError):
+        state.pop("temp_recovery_since", None)
+        state.pop("cpu_recovery_since", None)
+    state["last_check"] = now.isoformat()
+    if rows:
+        hot = {k for k, v in rows[-1][1]["temperatures_c"].items() if reporter.is_cpu_sensor(k) and v >= WARNING_C}
+        state["temp_sensors"] = sorted(set(state.get("temp_sensors", [])) | hot)
+    update_recovery(now, rows, state)
     event = candidate(now, rows)
     if not event:
+        diagnose_monitoring(now, rows, state)
+        save_state(state)
         return
     last_sent = state.get(event["key"])
     if last_sent:
         try:
-            if (now - dt.datetime.fromisoformat(last_sent)).total_seconds() < COOLDOWN_SECONDS:
+            if 0 <= (now - reporter.timestamp(last_sent)).total_seconds() < COOLDOWN_SECONDS:
+                diagnose_monitoring(now, rows, state)
+                save_state(state)
                 return
         except (ValueError, TypeError):
             pass
     title, body = format_alert(event)
     reporter.deliver(title, body, os.environ["PRW_REPORT_TO"], os.environ.get("PRW_MAILER", "auto"))
+    if event["key"].startswith("temp_"):
+        sensors = {k for k, v in event["row"]["temperatures_c"].items()
+                   if reporter.is_cpu_sensor(k) and v >= WARNING_C}
+        state["temp_sensors"] = sorted(set(state.get("temp_sensors", [])) | sensors)
     state[event["key"]] = now.isoformat()
+    diagnose_monitoring(now, rows, state)
     save_state(state)
 
 

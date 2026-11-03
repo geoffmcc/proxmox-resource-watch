@@ -44,9 +44,11 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Python 3.
 [[ -d /run/systemd/system ]] || fail 'This host is not running systemd.'
 [[ -f "$PROJECT_DIR/src/proxmox-resource-watch.py" ]] || fail 'Run installer from the complete repository.'
 
-script_names=(proxmox-resource-watch.py proxmox-resource-report.py proxmox-resource-alert.py)
+script_names=(proxmox-resource-watch.py proxmox-resource-report.py proxmox-resource-alert.py
+              proxmox-jellyfin-export.py)
 unit_names=(proxmox-resource-watch.service proxmox-resource-report.service proxmox-resource-report.timer
-            proxmox-resource-alert.service proxmox-resource-alert.timer)
+            proxmox-resource-alert.service proxmox-resource-alert.timer
+            proxmox-jellyfin-export.service proxmox-jellyfin-export.timer)
 for item in "${script_names[@]}"; do
   [[ -r "$PROJECT_DIR/src/$item" ]] || fail "Missing src/$item"
   python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$PROJECT_DIR/src/$item" || fail "Invalid Python: $item"
@@ -81,7 +83,18 @@ if [[ ! -f $CONFIG_DST ]]; then
 fi
 
 backup_dir="/var/backups/proxmox-resource-watch/$(date +%Y%m%d-%H%M%S)-$$"
-install -d -o root -g root -m 0700 "$backup_dir" "$LOG_DST"
+install -d -o root -g root -m 0700 "$backup_dir"
+# Shared upgrade policy: preserve records, enforce a private real directory.
+secure_log_directory() {
+  local target=$1
+  [[ ! -L $target ]] || fail 'Log directory must not be a symlink.'
+  if [[ ! -d $target ]]; then
+    mkdir -m 0700 -- "$target"
+  fi
+  chown root:root -- "$target"
+  chmod 0700 -- "$target"
+}
+secure_log_directory "$LOG_DST"
 backup_if_exists() {
   local target=$1
   if [[ -e $target ]]; then
@@ -97,9 +110,16 @@ for item in "${unit_names[@]}"; do
   backup_if_exists "$UNIT_DST/$item"
   install -o root -g root -m 0644 "$PROJECT_DIR/systemd/$item" "$UNIT_DST/$item"
 done
-if [[ ! -e $CONFIG_DST ]]; then
-  install -o root -g root -m 0600 "$PROJECT_DIR/config/proxmox-resource-watch.conf.example" "$CONFIG_DST"
-fi
+preserve_configuration() {
+  local source=$1 target=$2
+  [[ ! -L $target ]] || fail 'Configuration must not be a symlink.'
+  if [[ -e $target ]]; then
+    [[ -f $target ]] || fail 'Configuration must be a regular file.'
+  else
+    install -o root -g root -m 0600 "$source" "$target"
+  fi
+}
+preserve_configuration "$PROJECT_DIR/config/proxmox-resource-watch.conf.example" "$CONFIG_DST"
 
 systemctl daemon-reload
 systemctl enable proxmox-resource-watch.service
