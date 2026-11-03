@@ -20,6 +20,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Python regressions
         run: python -m unittest discover -s tests -v
+      - name: Direct regression invocation
+        run: python tests/test_resource_watch.py -v
+      - name: Python syntax
+        run: python -m py_compile src/*.py tests/*.py
       - name: Installer shell syntax
         run: bash -n install.sh
       - name: Systemd unit syntax

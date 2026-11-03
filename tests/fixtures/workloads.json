@@ -1,0 +1,11 @@
+{
+  "description": "Synthetic sanitized format examples. No production records or identities.",
+  "proxmox_json": [
+    "{\"__REALTIME_TIMESTAMP\":\"1793664000000000\",\"SYSLOG_IDENTIFIER\":\"pvedaemon\",\"_PID\":\"123\",\"MESSAGE\":\"<root@pam> starting task UPID:example:00000001:00000002:00000003:vzdump:101:root@pam:\"}",
+    "{\"__REALTIME_TIMESTAMP\":\"1793664060000000\",\"SYSLOG_IDENTIFIER\":\"pvedaemon\",\"_PID\":\"123\",\"MESSAGE\":\"<root@pam> end task UPID:example:00000001:00000002:00000003:vzdump:101:root@pam: OK\"}"
+  ],
+  "jellyfin": [
+    "[2026-11-03 00:43:22.000 -05:00] [INF] Emby.Server.Implementations.ScheduledTasks.TaskManager: \"Audio Normalization\" Completed after 43 minute(s) and 6 seconds",
+    "[2026-11-03 01:00:00.000 -05:00] [INF] [8] Emby.Server.Implementations.ScheduledTasks.TaskManager: \"Scan Media Library\" Completed after 2 minutes and 10 seconds"
+  ]
+}

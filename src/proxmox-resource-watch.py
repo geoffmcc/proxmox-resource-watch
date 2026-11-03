@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Lightweight, persistent Proxmox/Linux resource sampler."""
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import datetime as dt
 import glob
@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import time
+import tempfile
+import stat
 
 INTERVAL = int(os.environ.get("PRW_INTERVAL", "10"))
 RETENTION_DAYS = int(os.environ.get("PRW_RETENTION_DAYS", "30"))
@@ -97,6 +99,8 @@ def maintenance(today):
     cutoff = today - dt.timedelta(days=RETENTION_DAYS - 1)
     # Do not compress yesterday: a late report can still read uncompressed data.
     for path in LOG_DIR.glob("????-??-??.jsonl"):
+        if path.is_symlink() or not path.is_file():
+            continue
         try:
             day = dt.date.fromisoformat(path.stem)
         except ValueError:
@@ -107,11 +111,21 @@ def maintenance(today):
             dest = path.with_suffix(".jsonl.gz")
             if dest.exists():
                 continue
-            tmp = path.with_suffix(".jsonl.gz.tmp")
-            with path.open("rb") as source, gzip.open(tmp, "wb", compresslevel=6) as output:
-                while chunk := source.read(1024 * 1024):
-                    output.write(chunk)
-            tmp.replace(dest)
+            fd, tmp_name = tempfile.mkstemp(prefix=".compress-", dir=LOG_DIR)
+            tmp = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "wb") as raw:
+                    source_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    source = os.fdopen(source_fd, "rb")
+                    with source:
+                        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                            raise OSError("Compression source must be regular")
+                        with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6) as output:
+                            while chunk := source.read(1024 * 1024):
+                                output.write(chunk)
+                tmp.replace(dest)
+            finally:
+                tmp.unlink(missing_ok=True)
             path.unlink()
     for path in LOG_DIR.glob("????-??-??.jsonl.gz"):
         try:
@@ -125,11 +139,16 @@ def maintenance(today):
 def main():
     if INTERVAL < 1 or not 1 <= RETENTION_DAYS <= 3650:
         raise ValueError("Invalid interval or retention setting")
+    if LOG_DIR.is_symlink():
+        raise ValueError("Log directory must not be a symlink")
     LOG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.geteuid() == 0 and LOG_DIR.stat().st_uid != 0:
+        raise ValueError("Log directory must be owned by root")
     os.chmod(LOG_DIR, 0o700)
     previous_total, previous_idle = cpu_ticks()
     previous_proc = process_ticks()
     previous_time = time.monotonic()
+    previous_stamp = dt.datetime.now().astimezone()
     last_day = None
     while True:
         time.sleep(INTERVAL)
@@ -145,7 +164,7 @@ def main():
             if old and old[1] == start and ticks >= old[0] and elapsed > 0:
                 percent = round(100 * (ticks - old[0]) / HZ / elapsed, 1)
                 if percent >= 0.5:
-                    processes.append({"pid": pid, "name": name,
+                    processes.append({"pid": pid, "name": name, "start_ticks": start,
                                       "cpu_percent_one_core": percent, "command": command})
         processes.sort(key=lambda p: p["cpu_percent_one_core"], reverse=True)
         try:
@@ -157,12 +176,19 @@ def main():
         if day != last_day:
             maintenance(day)
             last_day = day
-        row = {"time": stamp.isoformat(timespec="seconds"),
+        row = {"time": stamp.isoformat(timespec="seconds"), "sample_seconds": round(elapsed, 6),
+               "clock_discontinuity": abs((stamp-previous_stamp).total_seconds()-elapsed) > 2,
                "host_cpu_busy_percent": busy_cpu, "load_average_1_5_15": load,
                **sensors(), "top_processes": processes[:5]}
-        with (LOG_DIR / f"{day.isoformat()}.jsonl").open("a", encoding="utf-8") as output:
+        log_path = LOG_DIR / f"{day.isoformat()}.jsonl"
+        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise OSError("Monitoring log must be a regular file")
+        with os.fdopen(fd, "a", encoding="utf-8") as output:
             output.write(json.dumps(row, separators=(",", ":")) + "\n")
         previous_total, previous_idle, previous_proc, previous_time = total, idle, current, now
+        previous_stamp = stamp
 
 
 if __name__ == "__main__":

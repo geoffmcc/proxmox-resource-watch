@@ -21,3 +21,11 @@ PRW_ALERT_COOLDOWN_SECONDS=1800
 PRW_REPORT_TO=root
 # Uses the installed Mutt client and existing root forwarding setup.
 PRW_MAILER=mutt
+
+# Optional readable Jellyfin log file; leave unset to disable integration.
+# PRW_JELLYFIN_LOG=/path/to/jellyfin.log
+
+# Optional LXC snapshot helper (enable proxmox-jellyfin-export.timer separately).
+# PRW_JELLYFIN_CONTAINER_ID=102
+# PRW_JELLYFIN_LOG=/var/log/proxmox-resource-watch/jellyfin-context.log
+# PRW_JELLYFIN_MAX_AGE_SECONDS=1800

@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the Resource Watch Jellyfin log snapshot
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=10min
+AccuracySec=10s
+Unit=proxmox-jellyfin-export.service
+
+[Install]
+WantedBy=timers.target
