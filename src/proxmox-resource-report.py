@@ -805,7 +805,7 @@ def main():
         if not discord.enabled():
             raise ValueError("Discord is disabled")
         error, _ = discord.send(discord.payload("TEST — Resource Watch",
-            f"Explicit delivery test for {socket.gethostname()}; no real alert condition. Observed {dt.datetime.now().astimezone().isoformat()}", 0x3498DB))
+            f"🔎 DELIVERY TEST\nHost: {socket.gethostname()}\nObserved: {dt.datetime.now().astimezone().isoformat()}\n\nNo real alert condition.", 0x3498DB))
         if error:
             raise RuntimeError(error)
         print("Discord test accepted; confirm receipt in the configured channel.")

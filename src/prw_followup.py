@@ -125,6 +125,26 @@ def context(reporter, job, rows):
     return severity, '\n'.join(parts)
 
 
+def discord_context(body):
+    """Organize the existing context for Discord without changing email text."""
+    sections = {'🔎 OBSERVATION': [], '📊 COVERAGE': [], '💻 CPU': [],
+                '🌡️ TEMPERATURE': [], '📋 WORKLOAD CONTEXT': []}
+    section = '🔎 OBSERVATION'
+    for line in body.splitlines():
+        if line.startswith(('Window:', 'Samples:', 'Sampling incomplete')):
+            section = '📊 COVERAGE'
+        elif line.startswith('Peak CPU temperature:'):
+            section = '🌡️ TEMPERATURE'
+        elif line.startswith('Observed CPU contributors'):
+            section = '💻 CPU'
+        elif line == 'Workload evidence:':
+            section = '📋 WORKLOAD CONTEXT'
+            continue
+        sections[section].append(line)
+    return '\n\n'.join(title + '\n' + '\n'.join(lines)
+                       for title, lines in sections.items() if lines)
+
+
 def run(reporter, directory, rows_loader, now=None):
     """One attempt per destination/episode. Never retry ambiguous supplemental sends."""
     if not enabled():
@@ -202,7 +222,7 @@ def run(reporter, directory, rows_loader, now=None):
                 if destination == 'email':
                     reporter.deliver('[PVE context] '+title, body+'\n', os.environ['PRW_REPORT_TO'], os.environ.get('PRW_MAILER', 'auto'))
                 else:
-                    error, _ = reporter.discord.send(reporter.discord.payload(title, body, 0xE74C3C if severity == 'CRITICAL' else 0xE67E22))
+                    error, _ = reporter.discord.send(reporter.discord.payload(title, discord_context(body), 0xE74C3C if severity == 'CRITICAL' else 0xE67E22))
                     if error:
                         print(error+' (follow-up; no retry)', flush=True)
             except Exception:
