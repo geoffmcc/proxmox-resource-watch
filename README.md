@@ -178,6 +178,8 @@ authoritative report. No bot, OAuth, Python packages, or additional service is n
 1. In Discord, open the target server's text channel settings, then **Integrations →
    Webhooks → New Webhook**. Choose the channel and copy the webhook URL. You need
    permission to manage webhooks. Use a regular text channel, not a forum thread.
+   If Discord copies a legacy `https://discordapp.com/` URL, replace only that hostname
+   with `discord.com` in the protected file; retain the webhook ID/token exactly.
 2. On the monitoring host, use `sudoedit /etc/default/proxmox-resource-watch` to add:
 
    ```ini
