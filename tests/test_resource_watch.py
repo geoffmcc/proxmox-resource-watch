@@ -53,7 +53,31 @@ class SamplingAndStorageTests(unittest.TestCase):
 
     def test_cpu_ticks_proc_stat(self):
         with mock.patch.object(sampler, "read", return_value="cpu 1 2 3 4 5 6 7 8 9 10"):
-            self.assertEqual(sampler.cpu_ticks(), (55, 9))
+            self.assertEqual(sampler.cpu_ticks(), (36, 9))
+
+    def test_guest_and_niced_guest_ticks_are_counted_once(self):
+        for line in ("cpu 600 0 0 400 0 0 0 0 600 0",
+                     "cpu 0 600 0 400 0 0 0 0 0 600",
+                     "cpu 300 300 0 400 0 0 0 0 300 300"):
+            with self.subTest(line=line), mock.patch.object(sampler, "read", return_value=line):
+                total, idle = sampler.cpu_ticks()
+                self.assertEqual((total, idle), (1000, 400))
+                self.assertAlmostEqual(100 * (1 - idle / total), 60)
+
+    def test_guest_workload_cpu_warning_uses_actual_host_utilization(self):
+        start = dt.datetime(2026, 11, 3, 12, tzinfo=TZ)
+        # A guest-dominated 70% workload previously appeared as ~82%, above
+        # the default sustained warning. An actual 80% workload must still alert.
+        for user, idle, expected_key in ((700, 300, None), (800, 200, "cpu_warning")):
+            with self.subTest(user=user), mock.patch.object(sampler, "read", side_effect=[
+                    "cpu 0 0 0 1000 0 0 0 0 0 0",
+                    f"cpu {user} 0 0 {1000 + idle} 0 0 0 0 {user} 0"]):
+                first_total, first_idle = sampler.cpu_ticks()
+                total, current_idle = sampler.cpu_ticks()
+                cpu = 100 * (1 - (current_idle - first_idle) / (total - first_total))
+                rows = [(start + dt.timedelta(seconds=i * 10), sample(start, cpu=cpu)) for i in range(30)]
+                event = alert.candidate(rows[-1][0], rows)
+                self.assertEqual(event["key"] if event else None, expected_key)
 
     def test_compress_old_dated_log_without_touching_legacy(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -107,6 +131,43 @@ class DailyReportTests(unittest.TestCase):
         item["temperatures_c"] = {"nvme": 75}
         _, body = report.report("2026-11-02", [(self.t, item)], 0)
         self.assertIn("Status: UNKNOWN", body)
+
+    def test_event_lines_distinguish_missing_measurements_from_observed_zero(self):
+        for cpu, temp, expected in (
+                (20, None, "CPU max 20.0%, temp max unavailable"),
+                (None, 90, "CPU max unavailable, temp max 90.0°C [194.0°F]"),
+                (float("nan"), 90, "CPU max unavailable, temp max 90.0°C [194.0°F]"),
+                (20, float("nan"), "CPU max 20.0%, temp max unavailable"),
+                (0, 90, "CPU max 0.0%, temp max 90.0°C [194.0°F]"),
+                (20, 0, "CPU max 20.0%, temp max 0.0°C [32.0°F]"),
+                (20, -5, "CPU max 20.0%, temp max -5.0°C [23.0°F]")):
+            with self.subTest(cpu=cpu, temp=temp):
+                row = sample(self.t, cpu=cpu, temp=temp)
+                row["temperatures_c"] = {} if temp is None else {"cpu_k10temp": temp}
+                _, body = report.report("2026-11-02", [(self.t, row)], 0)
+                self.assertIn(expected, body)
+
+    def test_event_peaks_use_available_readings_across_partial_data(self):
+        rows = []
+        for i, (cpu, temp) in enumerate(((None, 90), (20, None), (0, 0), (None, 91))):
+            stamp = self.t + dt.timedelta(seconds=i * 10)
+            row = sample(stamp, cpu=cpu)
+            row["temperatures_c"] = {} if temp is None else {"cpu_k10temp": temp}
+            rows.append((stamp, row))
+        _, body = report.report("2026-11-02", rows, 0)
+        self.assertIn("CPU max 20.0%, temp max 90.0°C [194.0°F]", body)
+        self.assertIn("CPU max unavailable, temp max 91.0°C [195.8°F]", body)
+
+    def test_events_with_missing_peaks_still_sort_by_observed_values(self):
+        rows = []
+        for i, (cpu, temp) in enumerate(((None, 90), (0, 0), (20, None), (0, 0), (20, 40))):
+            stamp = self.t + dt.timedelta(seconds=i * 10)
+            row = sample(stamp, cpu=cpu)
+            row["temperatures_c"] = {} if temp is None else {"cpu_k10temp": temp}
+            rows.append((stamp, row))
+        found = report.events(rows)
+        self.assertEqual([(e["cpu_peak"], e["temp_peak"]) for e in found],
+                         [(20, 40), (20, None), (None, 90)])
 
     def test_starts_and_stops_brief_and_sustained_events(self):
         samples = [(self.t + dt.timedelta(seconds=i * 10),
