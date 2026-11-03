@@ -46,3 +46,22 @@ from the baseline, run `systemctl daemon-reload`, restart only the resource samp
 and restore captured timer enablement/activity. Keep all monitoring JSONL/gzip logs.
 Restoring old state can resend alerts delivered since the backup; record this risk.
 Verify sampling, calendars and service results. Never alter guest or backup services.
+
+## Alert-context follow-up gates
+
+- Test warning/critical escalation as one thermal episode, CPU warning isolation,
+  delivery independence, disabled configuration, due time, recovery/re-arming,
+  restart persistence, failed analysis, missing evidence, 429 backoff, expiry and
+  exclusive attempt markers. Mock all transports; do not create production alerts.
+- Verify context distinguishes observed contributors, overlap, correlation and unknown
+  cause, sanitizes names/URLs/mentions, and never includes raw process commands.
+- Verify identity is persisted before jobs are published, and all diagnostics run in
+  the separate oneshot rather than the immediate checker. Follow-up delivery never
+  writes primary-alert cooldowns. No automatic retry after a supplemental attempt.
+- Before deployment, back up the alert script, config, state, units and any queue.
+  Record exact baseline/target, preserve history and verify rollback. The new timer
+  must not alter the existing sampling, report, alert or backup schedules.
+- Rollback: stop/disable only proxmox-resource-followup.timer; stop its oneshot;
+  restore backed-up alert script/config/state and units, remove the new follow-up
+  scripts/unit/timer, daemon-reload, restore original timer states. Preserve monitoring
+  history. Keep the private follow-up queue for investigation; the old checker ignores it.

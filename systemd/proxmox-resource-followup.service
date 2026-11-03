@@ -1,0 +1,16 @@
+[Unit]
+Description=Send bounded supplemental context after resource alerts
+After=local-fs.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/proxmox-resource-watch
+ExecStart=/usr/bin/python3 /usr/local/sbin/proxmox-resource-followup.py
+TimeoutStartSec=210
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/log/proxmox-resource-watch
+ReadWritePaths=-/var/spool/postfix/maildrop

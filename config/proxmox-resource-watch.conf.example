@@ -35,3 +35,8 @@ PRW_MAILER=mutt
 # Keep this file root:root 0600. Never paste the URL into logs or bug reports.
 PRW_DISCORD_ENABLED=false
 PRW_DISCORD_WEBHOOK_URL=
+
+# Optional one-time context follow-up after warning/critical primary delivery.
+# Enable proxmox-resource-followup.timer (installed/enabled by the installer).
+# Uses the same email/Discord destinations, roughly one minute later.
+PRW_FOLLOWUP_ENABLED=false

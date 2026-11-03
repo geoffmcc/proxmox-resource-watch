@@ -247,3 +247,52 @@ limiting, 5xx or connection failures may be temporary. Check DNS, trusted CA
 certificates and existing egress policy without printing the URL. If leaked, revoke
 the webhook in Discord and replace it securely. To disable only Discord, set
 `PRW_DISCORD_ENABLED=false`; email and collection continue unchanged on the next run.
+
+## Optional alert-context follow-ups
+
+Set `PRW_FOLLOWUP_ENABLED=true` in the existing root-only configuration and enable
+`proxmox-resource-followup.timer` to receive one supplemental message per alert
+**episode and destination**, roughly **one minute** after primary delivery.
+Timer cadence, evidence collection and transport latency can add delay.
+The installer installs/enables this small timer; it does nothing while the setting
+is absent or false. Existing configurations remain compatible and are preserved.
+
+Temperature warnings and escalation to critical share one thermal episode. If the
+critical escalation happens before the follow-up, available samples and saved
+severity make it a critical follow-up. If context was already sent for that episode,
+escalation still sends the immediate critical alert but does not send a second context
+message. Sustained CPU warnings have their own episode. Existing observed recovery
+rules re-arm follow-ups, independently of the 30-minute repeat-alert cooldown.
+
+The immediate checker performs no context analysis or follow-up network calls. It
+first persists its existing delivery state and episode identity, then atomically
+publishes private queue files. A separate oneshot service polls for due work, using
+bounded recent sample tails and the report's existing bounded workload collector.
+It has the same filesystem hardening as alerts, a 210-second unit deadline, and at
+most two transport attempts per invocation. Slow diagnostics or email in this worker
+cannot block the immediate checker. Busy transports can make a follow-up arrive
+later than a minute. No additional historical report or long-running daemon is used.
+
+Context includes sampled CPU contributors (names only), peak temperature and CPU
+statistics, incomplete-data notices, **confirmed workload overlap**, **possible
+workload correlation**, and explicit **unknown cause** wording. Matching times do
+not establish causation. Missing or late task-completion records can leave the cause
+unknown; later evidence may be available in the detailed daily report. Analysis
+failure yields a short unknown/unavailable follow-up rather than changing the
+original alert. No raw command lines, credentials, or workload log lines are sent.
+
+Each destination is queued only after successful primary delivery to that destination.
+Email and Discord supplemental attempts remain independent. An exclusive, fsynced
+attempt marker is saved **before** transport use; there is no retry after an ambiguous
+send or worker crash. This favors at-most-once attempts over guaranteed receipt.
+A disabled destination or existing Discord 429 backoff skips its follow-up. Jobs more
+than 15 minutes overdue expire; a delayed supplementary explanation is less useful.
+These outcomes never reset primary-alert delivery timestamps or cooldowns. Pending
+jobs survive checker restarts and observed recovery. Terminal queue records are
+retained for 30 days, or longer while their episode remains active, to prevent repeats.
+
+Queue/state files are private beneath `PRW_LOG_DIR/followups`. Setting
+`PRW_FOLLOWUP_ENABLED=false` disables only supplemental processing; monitoring,
+immediate email/Discord alerts and the daily report remain active. Already queued
+jobs may run after re-enabling if still within their expiry window. Inspect
+`journalctl -u proxmox-resource-followup.service` for safe error categories.

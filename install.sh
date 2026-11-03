@@ -44,11 +44,13 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Python 3.
 [[ -d /run/systemd/system ]] || fail 'This host is not running systemd.'
 [[ -f "$PROJECT_DIR/src/proxmox-resource-watch.py" ]] || fail 'Run installer from the complete repository.'
 
-script_names=(proxmox-resource-watch.py proxmox-resource-report.py proxmox-resource-alert.py
-              proxmox-jellyfin-export.py prw_discord.py)
+script_names=(prw_discord.py prw_followup.py proxmox-resource-report.py
+              proxmox-resource-alert.py proxmox-resource-followup.py
+              proxmox-resource-watch.py proxmox-jellyfin-export.py)
 unit_names=(proxmox-resource-watch.service proxmox-resource-report.service proxmox-resource-report.timer
             proxmox-resource-alert.service proxmox-resource-alert.timer
-            proxmox-jellyfin-export.service proxmox-jellyfin-export.timer)
+            proxmox-jellyfin-export.service proxmox-jellyfin-export.timer
+            proxmox-resource-followup.service proxmox-resource-followup.timer)
 for item in "${script_names[@]}"; do
   [[ -r "$PROJECT_DIR/src/$item" ]] || fail "Missing src/$item"
   python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$PROJECT_DIR/src/$item" || fail "Invalid Python: $item"
@@ -132,11 +134,13 @@ systemctl is-active --quiet proxmox-resource-watch.service || fail 'Sampler did 
 say 'Sending one daily report now to verify the configured mail transport...'
 systemctl start proxmox-resource-report.service || fail 'Email delivery failed; inspect journalctl -u proxmox-resource-report.service. Timers not enabled.'
 systemctl start proxmox-resource-alert.service || fail 'Alert check failed; inspect journalctl -u proxmox-resource-alert.service. Timers not enabled.'
-systemctl enable --now proxmox-resource-report.timer proxmox-resource-alert.timer
+systemctl enable --now proxmox-resource-report.timer proxmox-resource-alert.timer proxmox-resource-followup.timer
 systemctl is-active --quiet proxmox-resource-report.timer || fail 'Daily timer is not active.'
 systemctl is-active --quiet proxmox-resource-alert.timer || fail 'Alert timer is not active.'
 
-say 'Installation complete. Monitoring and both email timers are active.'
+systemctl is-active --quiet proxmox-resource-followup.timer || fail 'Follow-up timer is not active.'
+
+say 'Installation complete. Monitoring, primary notification timers and the optional context timer are active.'
 say "Original logs were not deleted. Backups of replaced files: $backup_dir"
 say 'Confirm the installation report arrived in your mailbox.'
-systemctl list-timers proxmox-resource-report.timer proxmox-resource-alert.timer --no-pager
+systemctl list-timers proxmox-resource-report.timer proxmox-resource-alert.timer proxmox-resource-followup.timer --no-pager
