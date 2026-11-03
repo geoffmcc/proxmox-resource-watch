@@ -2,6 +2,9 @@
 
 ## [0.2.0] - Unreleased
 
+- Add optional bounded context follow-ups about one minute after warning/critical delivery, once per episode and destination, using existing sample/workload evidence in a separate oneshot worker.
+- Keep primary-alert delivery/cooldowns isolated; persist private jobs/attempt markers and explicitly distinguish overlap, correlation and unknown cause.
+
 - Add optional Discord warning/critical embeds and a compact summary through the existing daily timer; preserve email formatting and independent per-destination cooldowns/recovery.
 - Bound webhook delivery, suppress mentions, redact URLs, persist alert failure backoff, and add offline transport/partial-failure regressions.
 - Back up preserved configuration and alert state during installation; keep systemd restrictions unchanged.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for due resource alert context every 10 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=10s
+AccuracySec=1s
+Unit=proxmox-resource-followup.service
+
+[Install]
+WantedBy=timers.target

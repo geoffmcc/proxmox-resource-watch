@@ -25,6 +25,10 @@ spec = importlib.util.spec_from_file_location("prw_report", str(Path(__file__).w
 reporter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reporter)
 
+spec = importlib.util.spec_from_file_location("prw_followup", str(Path(__file__).with_name("prw_followup.py")))
+followups = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(followups)
+
 
 def tail_rows(path, limit=160 * 1024):
     try:
@@ -139,7 +143,8 @@ def format_alert(event):
              f"Host CPU usage: {row.get('host_cpu_busy_percent', 'unavailable')}%"]
     if event["temperature"] is not None:
         lines.append(f"CPU sensor: {event['sensor']} — {reporter.temp_format(event['temperature'])}")
-    lines += ["", "Optional process and workload diagnostics are deferred to the daily report."]
+    lines += ["", ("A separate supplemental context message may follow; fuller diagnostics are in the daily report."
+                   if followups.enabled() else "Optional process and workload diagnostics are deferred to the daily report.")]
     lines += ["", "Only sampled top processes are available; CPU contributors are estimated.",
               "Review current load, cooling and recent workloads.",
               "This alert does not shut down or modify the host.",
@@ -192,6 +197,7 @@ def update_recovery(now, rows, state):
                 state.pop(alert_key, None)
                 state.pop("discord_" + alert_key, None)
                 state.pop("discord_retry_" + alert_key, None)
+            followups.rearm(state, group)
             if group == "temp":
                 state.pop("temp_sensors", None)
 
@@ -295,10 +301,22 @@ def main():
         sensors = {k for k, v in event["row"]["temperatures_c"].items()
                    if reporter.is_cpu_sensor(k) and v >= WARNING_C}
         state["temp_sensors"] = sorted(set(state.get("temp_sensors", [])) | sensors)
+    try:
+        followups.prepare(event, state, delivered=sent)
+    except Exception:
+        pass  # Supplemental scheduling cannot prevent saving primary delivery state.
     diagnose_monitoring(now, rows, state)
     # Keep email-only failure behavior, while persisting partial success/backoff.
     if sent or reporter.discord.enabled() or mail_error is None:
         save_state(state)
+        # Persist identity first; a queue failure must never undo primary delivery state.
+        try:
+            followups.queue(dt.datetime.now().astimezone(), event, state, LOG_DIR)
+        except Exception:
+            try:
+                print("Follow-up queue unavailable; primary alerts unaffected.", file=sys.stderr)
+            except OSError:
+                pass
     if discord_error:
         try:
             print(discord_error, file=sys.stderr)
