@@ -252,7 +252,8 @@ the webhook in Discord and replace it securely. To disable only Discord, set
 
 Set `PRW_FOLLOWUP_ENABLED=true` in the existing root-only configuration and enable
 `proxmox-resource-followup.timer` to receive one supplemental message per alert
-**episode and destination**, roughly **60–70 seconds** after primary delivery.
+**episode and destination**, roughly **one minute** after primary delivery.
+Timer cadence, evidence collection and transport latency can add delay.
 The installer installs/enables this small timer; it does nothing while the setting
 is absent or false. Existing configurations remain compatible and are preserved.
 
