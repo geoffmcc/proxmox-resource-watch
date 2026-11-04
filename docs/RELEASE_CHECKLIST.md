@@ -83,3 +83,27 @@ Verify sampling, calendars and service results. Never alter guest or backup serv
   restore backed-up alert script/config/state and units, remove the new follow-up
   scripts/unit/timer, daemon-reload, restore original timer states. Preserve monitoring
   history. Keep the private follow-up queue for investigation; the old checker ignores it.
+
+## Guest/history/daily-delivery candidate gates
+
+- Run all regressions plus direct new-test execution; CI must run Python 3.10/3.12.
+  Local Python 3.14 results do not establish those matrix passes.
+- Run `tests/benchmark_report.py` and `tests/benchmark_history.py`. Compare original
+  report cost on the same dataset using PRW_BENCHMARK_BASELINE if supplied. Review
+  guest input/write limits and sparse evidence rather than expanding memory limits.
+- Re-review separate guest/daily oneshots, fixed GET operation, private atomic ledger,
+  lock contention, in-flight ambiguity, duplicate conflicts and retention when disabled.
+- In a disposable authorized Proxmox/systemd environment, verify pvesh GET cache
+  semantics on supported versions, local-node naming, guest memory limits and timeout
+  enforcement; test read-only access and guest absence without touching guest lifecycle.
+- Exercise install/upgrade with retained config/state, before/after 07:00, failed
+  initial email, an already-delivered date and concurrent workers. Verify unit target
+  change retains the 07:00 calendar and Persistent=false.
+- With mocked transports test partial delivery, restart, state corruption, missing
+  observations, long Retry-After and expired jobs. Separately authorize real recipient
+  receipt checks; no live notification is implied by offline results.
+- Document exact deployment commit, back up all installed assets/state/timer activity,
+  and rehearse rollback in a disposable environment. Do not merge/release automatically.
+
+See [feature/security/rollback guide](GUEST_HISTORY_DELIVERY.md) and
+[development evidence](DEVELOPMENT_GUEST_HISTORY.md).

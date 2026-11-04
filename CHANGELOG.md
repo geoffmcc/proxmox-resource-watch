@@ -2,6 +2,13 @@
 
 ## [0.2.0] - Unreleased
 
+- Add optional read-only local QEMU/LXC observations in a separate bounded oneshot, with event-window attribution and explicit identity/evidence limitations.
+- Add time-weighted historical averages, coverage, sustained counts and per-sensor seven-day comparisons without increasing retention.
+- Persist daily email/Discord delivery independently; provide opt-in bounded catch-up and conservative Discord retries through a lightweight maintenance timer.
+- Add a non-mutating offline configuration validator; correct installer timer/feature wording and track initial sends to prevent automatic duplicates.
+- Expand offline regressions and add a 30-day resource-budget benchmark; retain production/disposable-systemd acceptance gates.
+
+
 - Count VM guest CPU time once in host utilization; preserve historical samples without attempting to reconstruct their biased percentages.
 - Show unavailable event peaks for missing CPU/temperature readings while retaining valid zero and negative temperature measurements.
 - Bound installed services with cgroup memory/swap limits, whole-unit OOM handling, and explicit notification deadlines; document failure and retry behavior.

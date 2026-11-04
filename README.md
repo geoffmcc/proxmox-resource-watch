@@ -45,7 +45,7 @@ The installer **does not** install an SMTP server, change firewall rules, alter 
 2. Back up any existing scripts/units under `/var/backups/proxmox-resource-watch/` and **preserve** the current `/etc/default/proxmox-resource-watch` and all monitoring logs.
 3. Install scripts in `/usr/local/sbin`, systemd units in `/etc/systemd/system`, and create a restricted log directory.
 4. Set the email destination through the config; existing user-edited settings take precedence.
-5. Restart the watcher, send one initial report as a mail-path test, check the alert service, and then enable **both** timers.
+5. Restart the watcher, deliver the initial date once using durable destination tracking (an already successful date is skipped), check the alert service, and then enable the daily-report, immediate-alert and optional follow-up timers, plus bounded daily-maintenance and opt-in guest-collection timers. The follow-up timer does useful work only with `PRW_FOLLOWUP_ENABLED=true`.
 6. Check that the watcher and timers are active, and print their schedules.
 
 If an email test fails, the script exits without enabling new timers. Previously enabled timers are not disabled. A failed upgrade leaves backups of replaced files but does not automatically roll them back; inspect the unit journal before retrying.
@@ -336,3 +336,7 @@ Queue/state files are private beneath `PRW_LOG_DIR/followups`. Setting
 immediate email/Discord alerts and the daily report remain active. Already queued
 jobs may run after re-enabling if still within their expiry window. Inspect
 `journalctl -u proxmox-resource-followup.service` for safe error categories.
+
+## Guest attribution, historical comparisons and reliable daily delivery
+
+See [the feature, security, upgrade and troubleshooting guide](docs/GUEST_HISTORY_DELIVERY.md) for optional read-only guest snapshots, coverage-aware per-sensor baselines, controlled catch-up, bounded Discord retries and the offline configuration validator. Features remain observational; no production installation is implied by this development candidate.
