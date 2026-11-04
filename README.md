@@ -2,10 +2,19 @@
 
 **v0.2.0 — Preview, pending independent review**
 
-A small Python 3 monitoring utility for Proxmox VE (or other Debian/Ubuntu Linux hosts). It samples host resources every 10 seconds, retains 30 days of daily JSONL logs, emails a readable daily summary, and checks for high-temperature/high-CPU alerts. It **does not** control fans or automatically shut down virtual machines, containers, or the host.
+**A lightweight, Proxmox-aware monitoring tool that helps explain what was happening when your server experienced resource or temperature problems.**
+
+When a server runs hot or busy, Proxmox Resource Watch brings together sampled process history, optional read-only VM/LXC activity, workload context, event durations, and recent historical comparisons. Its reports help you investigate what was active during an event and whether the behavior differs from recent patterns. Observed activity and temporal overlap are evidence for investigation, not proof that a workload caused an event; missing samples or guest observations can leave the contribution unknown.
+
+Traditional monitoring tools show what happened across your infrastructure. Resource Watch focuses on the context around resource and temperature events: what was happening at the time and why an event may have occurred. It complements tools such as Grafana rather than trying to replace a general-purpose monitoring platform.
+
+This small Python 3 utility runs on Proxmox VE (or other Debian/Ubuntu Linux hosts). It samples host resources every 10 seconds, retains 30 days of daily JSONL logs by default, emails a readable daily summary, and checks for high-temperature/high-CPU alerts. It **does not** control fans or automatically shut down virtual machines, containers, or the host.
 
 ## Features
 
+- Investigative event reports with observed process activity, estimated duration, and workload correlation; missing evidence and uncertain recovery are identified.
+- Optional read-only QEMU VM and LXC snapshots that relate observed guest CPU activity to host event windows; guest CPU is not added to host CPU totals.
+- Coverage-aware daily CPU and temperature statistics with per-sensor comparisons against recent days when enough data is available.
 - Host-wide CPU percentage, 1/5/15-minute load, and up to five busiest observed processes.
 - Available AMD GPU activity/VRAM counters, per-sensor temperatures and fan RPM.
 - 30 days of dated logs, compression of older dates, and preservation of legacy v1 gist logs.
