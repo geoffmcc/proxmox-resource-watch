@@ -1,0 +1,11 @@
+[Unit]
+Description=Bounded Resource Watch guests maintenance
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=60s
+AccuracySec=10s
+Unit=proxmox-resource-guests.service
+
+[Install]
+WantedBy=timers.target

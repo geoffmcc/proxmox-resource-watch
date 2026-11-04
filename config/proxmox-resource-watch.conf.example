@@ -40,3 +40,18 @@ PRW_DISCORD_WEBHOOK_URL=
 # Enable proxmox-resource-followup.timer (installed/enabled by the installer).
 # Uses the same email/Discord destinations, roughly one minute later.
 PRW_FOLLOWUP_ENABLED=false
+
+# Read-only local Proxmox GET snapshots, once per minute in a separate oneshot.
+# No API token; uses the service's existing local root privilege. No guest commands.
+PRW_GUEST_ENABLED=false
+# Optional missed-report delivery; most recent due report only, within max age.
+PRW_DAILY_CATCHUP_ENABLED=false
+# Hours since the original next-day 07:00 host-local schedule (1..48).
+PRW_DAILY_MAX_AGE_HOURS=24
+# Total attempts per destination (1..10); ambiguous outcomes stop automatically.
+PRW_DAILY_RETRY_LIMIT=3
+# Minimum backoff seconds (300..86400); exponential, honoring larger Retry-After.
+PRW_DAILY_RETRY_SECONDS=900
+
+# Guest snapshots can be less frequent than timer wakeups (60..3600 seconds).
+PRW_GUEST_INTERVAL_SECONDS=60

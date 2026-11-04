@@ -1,5 +1,8 @@
 """Optional Discord transport. Never include transport exceptions in diagnostics."""
 import json
+import math
+import time
+from email.utils import parsedate_to_datetime
 import os
 import re
 import unicodedata
@@ -30,7 +33,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def send(message):
+def send(message, *, daily=False):
     """Return (safe error or None, retry delay seconds). One bounded attempt only."""
     if not enabled():
         return None, 0
@@ -56,9 +59,18 @@ def send(message):
         delay = 60
         if status == 429:
             try:
-                delay = max(60, min(86400, float(exc.headers.get('Retry-After', '60'))))
-            except (ValueError, TypeError, OverflowError):
-                pass
+                raw = exc.headers.get('Retry-After', '60')
+                if daily:
+                    try:
+                        requested = float(raw)
+                    except ValueError:
+                        requested = parsedate_to_datetime(raw).timestamp() - time.time()
+                    delay = max(60, requested) if math.isfinite(requested) else 172800
+                else:
+                    delay = max(60, min(86400, float(raw)))
+            except (ValueError, TypeError, OverflowError, AttributeError):
+                if daily:
+                    delay = 172800
         exc.close()
         return f'Discord HTTP {status}', delay
     except Exception:

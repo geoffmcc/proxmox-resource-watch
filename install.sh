@@ -44,13 +44,15 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Python 3.
 [[ -d /run/systemd/system ]] || fail 'This host is not running systemd.'
 [[ -f "$PROJECT_DIR/src/proxmox-resource-watch.py" ]] || fail 'Run installer from the complete repository.'
 
-script_names=(prw_discord.py prw_followup.py proxmox-resource-report.py
+script_names=(prw_storage.py prw_guests.py prw_history.py prw_daily.py proxmox-resource-check-config.py prw_discord.py prw_followup.py proxmox-resource-report.py
               proxmox-resource-alert.py proxmox-resource-followup.py
               proxmox-resource-watch.py proxmox-jellyfin-export.py)
-unit_names=(proxmox-resource-watch.service proxmox-resource-report.service proxmox-resource-report.timer
+unit_names=(proxmox-resource-scheduled.service proxmox-resource-watch.service proxmox-resource-report.service proxmox-resource-report.timer
             proxmox-resource-alert.service proxmox-resource-alert.timer
             proxmox-jellyfin-export.service proxmox-jellyfin-export.timer
-            proxmox-resource-followup.service proxmox-resource-followup.timer)
+            proxmox-resource-followup.service proxmox-resource-followup.timer
+            proxmox-resource-guests.service proxmox-resource-guests.timer
+            proxmox-resource-daily.service proxmox-resource-daily.timer)
 for item in "${script_names[@]}"; do
   [[ -r "$PROJECT_DIR/src/$item" ]] || fail "Missing src/$item"
   python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$PROJECT_DIR/src/$item" || fail "Invalid Python: $item"
@@ -66,7 +68,8 @@ else
   say 'New installation: default email is addressed to root via Mutt.'
 fi
 say 'Install will preserve existing logs, back up replaced files, restart only the watcher service,'
-say 'send one initial report email and enable both daily-report and near-real-time alert timers.'
+say 'send one initial report and enable the daily-report, immediate-alert and optional follow-up timers.'
+say 'The follow-up timer runs only when PRW_FOLLOWUP_ENABLED=true. Guest collection is separately opt-in.'
 if ((DRY_RUN)); then
   say 'DRY RUN — no files, services, timers or email have been changed.'
   exit 0
@@ -134,7 +137,7 @@ systemctl is-active --quiet proxmox-resource-watch.service || fail 'Sampler did 
 say 'Sending one daily report now to verify the configured mail transport...'
 systemctl start proxmox-resource-report.service || fail 'Email delivery failed; inspect journalctl -u proxmox-resource-report.service. Timers not enabled.'
 systemctl start proxmox-resource-alert.service || fail 'Alert check failed; inspect journalctl -u proxmox-resource-alert.service. Timers not enabled.'
-systemctl enable --now proxmox-resource-report.timer proxmox-resource-alert.timer proxmox-resource-followup.timer
+systemctl enable --now proxmox-resource-report.timer proxmox-resource-alert.timer proxmox-resource-followup.timer proxmox-resource-daily.timer proxmox-resource-guests.timer
 systemctl is-active --quiet proxmox-resource-report.timer || fail 'Daily timer is not active.'
 systemctl is-active --quiet proxmox-resource-alert.timer || fail 'Alert timer is not active.'
 
