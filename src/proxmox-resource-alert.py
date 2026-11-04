@@ -58,7 +58,8 @@ def recent(now):
         all_rows.extend(tail_rows(LOG_DIR / f"{day}.jsonl"))
     cutoff = now - dt.timedelta(seconds=max(CPU_WARNING_SECONDS, WARNING_SECONDS, 60) + 60)
     normalized = reporter.normalize_rows(all_rows)
-    return reporter.NormalizedRows([(t, row) for t, row in normalized if cutoff <= t <= now], normalized.clock_uncertain)
+    return reporter.NormalizedRows([(t, row) for t, row in normalized if cutoff <= t <= now],
+                                   normalized.clock_uncertain, normalized.data_uncertain)
 
 
 def top_cpu_temperature(row):

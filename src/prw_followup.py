@@ -115,6 +115,10 @@ def context(reporter, job, rows):
             f"{reporter.discord.clean(p['name'], 40)} ({p['peak']:.1f}% one-core peak)" for p in processes[:3]))
     else:
         parts.append('Observed CPU contributors: unavailable.')
+    if hasattr(reporter, 'guest_context'):
+        parts.extend(reporter.guest_context(observed.date().isoformat(), [(start, end)],
+                                            uncertain=selected.clock_uncertain or selected.data_uncertain or
+                                            getattr(rows, 'clock_uncertain', False) or getattr(rows, 'data_uncertain', False)))
     evidence = reporter.workload_evidence(start, end)
     parts.append('Workload evidence:')
     parts.extend(reporter.discord.clean(line, 240) for line in evidence[:3])

@@ -5,7 +5,7 @@ After=local-fs.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/default/proxmox-resource-watch
-ExecStart=/usr/bin/python3 /usr/local/sbin/proxmox-resource-report.py --send
+ExecStart=/usr/bin/python3 /usr/local/sbin/proxmox-resource-report.py --initial
 TimeoutStartSec=300s
 TimeoutStopSec=10s
 MemoryMax=512M
@@ -20,3 +20,5 @@ ProtectHome=read-only
 PrivateTmp=true
 # Permit the local Postfix sendmail wrapper to enqueue mail, if installed.
 ReadWritePaths=-/var/spool/postfix/maildrop
+TasksMax=32
+ReadWritePaths=/var/log/proxmox-resource-watch

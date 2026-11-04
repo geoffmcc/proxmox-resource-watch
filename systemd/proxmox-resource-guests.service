@@ -1,0 +1,23 @@
+[Unit]
+Description=Bounded Resource Watch guests
+After=local-fs.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/proxmox-resource-watch
+ExecStart=/usr/bin/python3 /usr/local/sbin/prw_guests.py
+TimeoutStartSec=15s
+TimeoutStopSec=10s
+MemoryMax=256M
+MemorySwapMax=0
+OOMPolicy=kill
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+# Mutt may need the root account's ~/.muttrc and ~/.mutt files.
+# Keep its home readable while preventing writes there.
+ProtectHome=read-only
+PrivateTmp=true
+# Permit the local Postfix sendmail wrapper to enqueue mail, if installed.
+TasksMax=32
+ReadWritePaths=/var/log/proxmox-resource-watch

@@ -1,0 +1,11 @@
+[Unit]
+Description=Bounded Resource Watch daily maintenance
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=10s
+Unit=proxmox-resource-daily.service
+
+[Install]
+WantedBy=timers.target

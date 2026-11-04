@@ -2,6 +2,22 @@
 
 ## [0.2.0] - Unreleased
 
+- Set the guest-only service memory limit to 256 MiB after the original 64 MiB
+  limit killed a real collection: `pvesh` alone used approximately 175 MiB RSS
+  on the test host, and a 256 MiB guest unit completed with a 155 MiB cgroup peak.
+
+
+- Resolve the eight pre-PR review findings: isolate optional imports from critical alerts, preserve scheduled intent across lock contention, start Discord backoff at response time, align config validation with runtime, integrate preceding CPU intervals, preserve uncertain guest correlation, sanitize single-line names, and measure adverse histories inside the benchmark window.
+- Preserve conflict confidence through the follow-up loader and account for whole-second sampler timestamps when counting continuous CPU activity.
+
+
+- Add optional read-only local QEMU/LXC observations in a separate bounded oneshot, with event-window attribution and explicit identity/evidence limitations.
+- Add time-weighted historical averages, coverage, sustained counts and per-sensor seven-day comparisons without increasing retention.
+- Persist daily email/Discord delivery independently; provide opt-in bounded catch-up and conservative Discord retries through a lightweight maintenance timer.
+- Add a non-mutating offline configuration validator; correct installer timer/feature wording and track initial sends to prevent automatic duplicates.
+- Expand offline regressions and add a 30-day resource-budget benchmark; retain production/disposable-systemd acceptance gates.
+
+
 - Count VM guest CPU time once in host utilization; preserve historical samples without attempting to reconstruct their biased percentages.
 - Show unavailable event peaks for missing CPU/temperature readings while retaining valid zero and negative temperature measurements.
 - Bound installed services with cgroup memory/swap limits, whole-unit OOM handling, and explicit notification deadlines; document failure and retry behavior.

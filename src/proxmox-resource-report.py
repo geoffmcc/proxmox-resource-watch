@@ -28,6 +28,10 @@ import signal
 import heapq
 import importlib.util
 
+# Also support offline importlib-based callers.
+if str(Path(__file__).parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).parent))
+
 _discord_spec = importlib.util.spec_from_file_location("prw_discord", Path(__file__).with_name("prw_discord.py"))
 discord = importlib.util.module_from_spec(_discord_spec)
 _discord_spec.loader.exec_module(discord)
@@ -40,6 +44,19 @@ INTERVAL = int(os.environ.get("PRW_INTERVAL", "10"))
 SUSTAINED_SECONDS = int(os.environ.get("PRW_SUSTAINED_SECONDS", "30"))
 CPU_WARNING_C = float(os.environ.get("PRW_CPU_WARNING_C", "85"))
 CPU_CRITICAL_C = float(os.environ.get("PRW_CPU_CRITICAL_C", "92"))
+
+
+def guest_context(day, windows, uncertain=False):
+    try:
+        import prw_guests
+        return prw_guests.lines(_reporter(), day, windows, uncertain=uncertain)
+    except Exception:
+        return ['Guest observations unavailable; contribution unknown.']
+
+
+def _reporter():
+    import types
+    return types.SimpleNamespace(**globals())
 
 
 def temp_format(celsius, decimals=1):
@@ -111,12 +128,13 @@ def clean_row(row):
 
 class NormalizedRows(list):
     """Internal canonical rows; consumers must treat row dictionaries as read-only."""
-    def __init__(self, rows=(), clock_uncertain=False):
+    def __init__(self, rows=(), clock_uncertain=False, data_uncertain=False):
         super().__init__(rows)
         self.clock_uncertain = clock_uncertain
+        self.data_uncertain = data_uncertain
 
 
-def normalize_rows(rows, clock_uncertain=False, *, _already_clean=False):
+def normalize_rows(rows, clock_uncertain=False, *, _already_clean=False, data_uncertain=False):
     if isinstance(rows, NormalizedRows):
         return rows
     merged = {}
@@ -133,6 +151,13 @@ def normalize_rows(rows, clock_uncertain=False, *, _already_clean=False):
             merged[stamp] = row
             continue
         old = merged[stamp]
+        # Conflicting simultaneous observations cannot establish a reliable average.
+        if (row['host_cpu_busy_percent'] is not None and old['host_cpu_busy_percent'] is not None and
+                row['host_cpu_busy_percent'] != old['host_cpu_busy_percent']):
+            data_uncertain = True
+        if any(key in old['temperatures_c'] and old['temperatures_c'][key] != value
+               for key, value in row['temperatures_c'].items()):
+            data_uncertain = True
         if _already_clean:
             old = dict(old, temperatures_c=dict(old["temperatures_c"]), fans_rpm=dict(old["fans_rpm"]))
             merged[stamp] = old
@@ -151,17 +176,20 @@ def normalize_rows(rows, clock_uncertain=False, *, _already_clean=False):
             if key not in procs or proc["cpu_percent_one_core"] > procs[key]["cpu_percent_one_core"]:
                 procs[key] = proc
         old["top_processes"] = list(procs.values())
-    return NormalizedRows(sorted(merged.items(), key=lambda pair: pair[0]), clock_uncertain)
+    return NormalizedRows(sorted(merged.items(), key=lambda pair: pair[0]), clock_uncertain, data_uncertain)
 
 
 def combine_rows(*parts):
     """Merge canonical day windows without recleaning or mutating their rows."""
     ordered = sorted((item for part in parts for item in part), key=lambda pair: pair[0])
-    return normalize_rows(ordered, any(part.clock_uncertain for part in parts), _already_clean=True)
+    return normalize_rows(ordered, any(part.clock_uncertain for part in parts), _already_clean=True,
+                          data_uncertain=any(part.data_uncertain for part in parts))
 
 
-def rows_for(day):
-    sources = [LOG_DIR / f"{day}.jsonl", LOG_DIR / f"{day}.jsonl.gz", LEGACY, LEGACY.with_suffix(".jsonl.1")]
+def rows_for(day, include_legacy=True):
+    sources = [LOG_DIR / f"{day}.jsonl", LOG_DIR / f"{day}.jsonl.gz"]
+    if include_legacy:
+        sources += [LEGACY, LEGACY.with_suffix(".jsonl.1")]
     rows, errors = [], 0
     clock_uncertain = False
     for path in sources:
@@ -568,6 +596,9 @@ def report(day, rows, errors, context_rows=None, summary=None):
     rows = normalize_rows(rows)
     if summary is not None:
         summary.update(samples=len(rows), errors=errors, clock_uncertain=rows.clock_uncertain)
+        import prw_history
+        stats = prw_history.aggregate(_reporter(), day, rows, errors)['metrics'].get('cpu')
+        summary['history'] = ('Host CPU weighted average ' + (f"{stats['average']:.1f}%" if stats['average'] is not None else 'unavailable') + f"; coverage {stats['coverage']:.1%}. Per-sensor baselines in full report.") if stats else 'Insufficient historical data.'
     title = f"Proxmox Resource Report | {socket.gethostname()} | {day}"
     out = [title, "=" * len(title), "", f"Samples: {len(rows)} (expected ~{86400 // INTERVAL})"]
     if rows.clock_uncertain:
@@ -702,6 +733,12 @@ def report(day, rows, errors, context_rows=None, summary=None):
                         summary['context'].append(label)
         out.append("")
         out.extend(event_lines(event, evidence=evidence))
+    guest_lines = guest_context(day, [(e["first"], e["last"]) for e in found],
+                                uncertain=bool(errors or rows.clock_uncertain or rows.data_uncertain))
+    out += ["", *guest_lines, ""]
+    if summary is not None:
+        summary['guest'] = next((line.strip() for line in guest_lines if 'Confirmed temporal overlap:' in line),
+                                'No guest snapshot confirms activity inside host event windows; contribution unknown.')
     out += ["", "NOTES", "-----", "",
             "Events are correlations, not proof that a process caused the heat or fan change.",
             "Only sampled top processes are available; short-lived or lower-ranked processes can be missed.",
@@ -771,6 +808,10 @@ def summary_message(day, summary):
                   f"🔎 MONITORING HEALTH\nSampling gaps: {summary['gaps']}\nMissing CPU samples: {summary['cpu_missing']}\nMissing temperature samples: {summary['samples']-summary['temperature_samples']}\nClock uncertain: {'yes' if summary['clock_uncertain'] else 'no'}"]
         if summary['context']:
             parts.append("📋 WORKLOAD CONTEXT\nWorkloads in selected thermal-event window (correlation only):\n" + "\n".join(summary['context']))
+    if summary.get('guest'):
+        parts.append('GUEST CONTEXT (correlation only)\n' + summary['guest'])
+    if summary.get('history'):
+        parts.append('HISTORICAL CONTEXT\n' + summary['history'])
     return discord.payload(f"Daily health | {socket.gethostname()} | {day}", "\n\n".join(parts), 0x3498DB)
 
 
@@ -795,12 +836,26 @@ def send_report(subject, body, mailer, day, summary):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--initial", action="store_true", help="Installer delivery, tracked even before 07:00")
+    parser.add_argument("--tracked", action="store_true", help="Durable scheduled delivery for yesterday")
+    parser.add_argument("--scheduled", action="store_true", help="Retry pending daily destinations and optional catch-up")
     parser.add_argument("--discord-test", action="store_true", help="Send one identified Discord test only; no email or threshold changes")
     parser.add_argument("--date", help="Calendar day YYYY-MM-DD (default yesterday)")
     parser.add_argument("--send", action="store_true", help="Send via selected mailer; default prints report")
     parser.add_argument("--mailer", choices=["auto", "mutt", "sendmail"],
                         default=os.environ.get("PRW_MAILER", "auto"))
     args = parser.parse_args()
+    if args.scheduled:
+        import prw_daily
+        prw_daily.scheduled(_reporter(), args.mailer)
+        return
+    if args.tracked or args.initial:
+        import prw_daily
+        if args.date or args.discord_test:
+            parser.error("tracked delivery cannot use --date or --discord-test")
+        day = (dt.datetime.now().astimezone().date()-dt.timedelta(days=1)).isoformat()
+        prw_daily.run(_reporter(), day, args.mailer, create=True, initial=args.initial)
+        return
     if args.discord_test:
         if not discord.enabled():
             raise ValueError("Discord is disabled")
@@ -820,6 +875,8 @@ def main():
     context = combine_rows(previous, rows, following)
     summary = {} if args.send and discord.enabled() else None
     subject, body = report(day, rows, errors + previous_errors + following_errors, context, summary)
+    import prw_history
+    body += "\n" + "\n".join(prw_history.comparison(_reporter(), day, rows, errors)) + "\n"
     if args.send:
         send_report(subject, body, args.mailer, day, summary)
     else:
