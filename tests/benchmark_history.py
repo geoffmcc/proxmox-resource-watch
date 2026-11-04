@@ -1,4 +1,9 @@
-"""Thirty-day offline benchmark with fixed budgets; excludes dataset creation."""
+"""Offline report analysis with adjacent-day context and 30 retained days.
+
+Excludes dataset creation, pvesh startup/API, transports and concurrent systemd
+services. The measured window must exercise rollback, malformed/missing samples
+and guest restarts. This is not a full scheduled-service benchmark.
+"""
 import datetime as dt
 import json
 import os
@@ -41,11 +46,16 @@ def main():
                         continue
                     hot = sample % 600 < 12
                     stamp = start+dt.timedelta(seconds=sample*10)
-                    if index == 9 and sample == 300:
+                    if index == 23 and sample == 300:
                         stamp -= dt.timedelta(seconds=60)
-                    row = dict(time=stamp.isoformat(),sample_seconds=10,clock_discontinuity=index==9 and sample==300,
+                    row = dict(time=stamp.isoformat(),sample_seconds=10,clock_discontinuity=index==23 and sample==300,
                                host_cpu_busy_percent=80 if hot else 12, temperatures_c={f'cpu:sensor{i}':90 if hot else 50+i for i in range(4)},
                                top_processes=[dict(name=f'worker{i}',pid=i,start_ticks=100+i,cpu_percent_one_core=25+i) for i in range(5)])
+                    if index == 26 and sample == 500:
+                        row['host_cpu_busy_percent'] = None
+                        row['temperatures_c'] = {}
+                    if index == 27 and sample == 600:
+                        stream.write('{malformed\n')
                     encoded = json.dumps(row,separators=(',',':'))+'\n'
                     stream.write(encoded)
                     written += len(encoded)
@@ -62,28 +72,50 @@ def main():
             began_baseline = time.monotonic()
             with mock.patch.object(baseline,'LOG_DIR',root), mock.patch.object(baseline,'LEGACY',root/'absent'), mock.patch.object(baseline,'collect_evidence',return_value=([],[])):
                 baseline_rows, baseline_errors = baseline.rows_for(str(first+dt.timedelta(days=29)))
-                baseline.report(str(first+dt.timedelta(days=29)),baseline_rows,baseline_errors,summary={})
+                baseline_previous, prior_errors = baseline.rows_for(str(first+dt.timedelta(days=28)))
+                baseline_following, next_errors = baseline.rows_for(str(first+dt.timedelta(days=30)))
+                baseline.report(str(first+dt.timedelta(days=29)),baseline_rows,baseline_errors+prior_errors+next_errors,
+                                baseline.combine_rows(baseline_previous,baseline_rows,baseline_following),summary={})
             baseline_seconds = round(time.monotonic()-began_baseline,3)
-            del baseline_rows
+            del baseline_rows, baseline_previous, baseline_following
         began = time.monotonic()
         before = resource.getrusage(resource.RUSAGE_SELF)
         read_start = io_characters()
-        with mock.patch.object(report,'LOG_DIR',root), mock.patch.object(report,'LEGACY',root/'absent'), mock.patch.object(report,'collect_evidence',return_value=([],[])):
+        observed_aggregates = {}
+        real_aggregate = prw_history.aggregate
+        def checked_aggregate(reporter, date, rows, errors=0):
+            result = real_aggregate(reporter, date, rows, errors)
+            observed_aggregates[date] = dict(clock=rows.clock_uncertain, errors=errors,
+                missing=any(row.get('host_cpu_busy_percent') is None for _,row in rows))
+            return result
+        with mock.patch.object(prw_history,'aggregate',new=checked_aggregate), mock.patch.object(report,'LOG_DIR',root), mock.patch.object(report,'LEGACY',root/'absent'), mock.patch.object(report,'collect_evidence',return_value=([],[])):
             day = str(first+dt.timedelta(days=29))
             rows, errors = report.rows_for(day)
-            _, body = report.report(day,rows,errors,summary={})
+            previous, prior_errors = report.rows_for(str(first+dt.timedelta(days=28)))
+            following, next_errors = report.rows_for(str(first+dt.timedelta(days=30)))
+            context = report.combine_rows(previous, rows, following)
+            _, body = report.report(day,rows,errors+prior_errors+next_errors,context,summary={})
             current_report_seconds = round(time.monotonic()-began,3)
             body += '\n'.join(prw_history.comparison(report,day,rows,errors))
             self_check = prw_history.aggregate(report,day,rows)
             assert self_check['metrics']['cpu']['average'] is not None
             assert 'previous seven-day baseline' in body
+            assert observed_aggregates[str(first+dt.timedelta(days=23))]['clock']
+            assert observed_aggregates[str(first+dt.timedelta(days=27))]['errors'] > 0
+            assert observed_aggregates[str(first+dt.timedelta(days=26))]['missing']
+            snapshots = prw_guests.observations(report, day)
+            uptimes = [guest['uptime'] for _, values in snapshots for guest in values if guest['vmid']==100]
+            assert any(b<a for a,b in zip(uptimes,uptimes[1:])), 'Measured guest window must include restart'
+            assert any((b[0]-a[0]).total_seconds()>report.INTERVAL*1.5 for a,b in zip(rows,rows[1:])), 'Measured day must have a sampling gap'
             collection = time.monotonic()
             for _ in range(100):
                 prw_guests.normalize([dict(node='test',status='running',vmid=100+i,type='qemu',cpu=.5,maxcpu=2,mem=100,maxmem=200,uptime=100,name='test') for i in range(100)],'test')
             guest_ms = (time.monotonic()-collection)*10
         actual_read_characters = io_characters()-read_start
         after = resource.getrusage(resource.RUSAGE_SELF)
-        result = dict(days_on_disk=30,host_samples=30*(8640-10),guest_count=10,sensors=4,baseline_single_day_report_seconds=baseline_seconds,current_single_day_report_seconds=current_report_seconds,
+        result = dict(days_on_disk=30,host_samples=30*(8640-10),guest_count=10,sensors=4,baseline_report_with_context_seconds=baseline_seconds,current_report_with_context_seconds=current_report_seconds,
+                      measurement="report analysis only; adjacent-day context included; API/transport/concurrency excluded",
+                      adverse_cases_verified=["clock rollback", "malformed record", "missing values", "sampling gaps", "guest restart"],
                       latency_seconds=round(time.monotonic()-began,3),cpu_seconds=round(after.ru_utime+after.ru_stime-before.ru_utime-before.ru_stime,3),
                       peak_rss_mib=round(after.ru_maxrss/1024,1),host_history_bytes=written,
                       read_bytes_logical_bound=15*report.MAX_BYTES*2,read_characters=actual_read_characters,guest_history_bytes=sum(path.stat().st_size for path in (root/'guests').glob('*.jsonl')),guest_normalize_100_ms=round(guest_ms,3),output_bytes=len(body.encode()))

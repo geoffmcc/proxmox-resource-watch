@@ -37,12 +37,21 @@ def validate(state):
 
 
 def run(reporter, day, mailer, create=False, now=None, initial=False):
+    began = time.monotonic()
+    supplied_now = now
     now = time.time() if now is None else now
+    def current_time():
+        return time.time() if supplied_now is None else now + max(0, time.monotonic()-began)
     max_age, limit, backoff = settings()
     age = now - due(day)
     if (age < 0 or age > max_age) and not initial:
         return False
     directory = prw_storage.directory(reporter.LOG_DIR / 'daily')
+    # Persist scheduled intent before competing for the worker lock. The maintenance
+    # timer may resume this request even when downtime catch-up is disabled.
+    request = directory / (dt.date.fromisoformat(day).isoformat() + '.requested')
+    if create:
+        prw_storage.atomic(request, {'day': day})
     fd = os.open(directory / 'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     with os.fdopen(fd, 'r+') as lock:
         if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
@@ -58,9 +67,14 @@ def run(reporter, day, mailer, create=False, now=None, initial=False):
             state = validate(prw_storage.read(path))
         except FileNotFoundError:
             if not create:
-                return False
+                try:
+                    if prw_storage.read(request, limit=256) != {'day': day}:
+                        raise ValueError('Invalid scheduled request')
+                except FileNotFoundError:
+                    return False
             state = {key: dict(status='pending', attempts=0, next=now) for key in ('email', 'discord')}
             prw_storage.atomic(path, state)
+        request.unlink(missing_ok=True)  # Durable ledger now owns the request.
         destinations = [key for key, value in state.items() if value['status'] == 'pending' and
                         value['attempts'] < limit and value['next'] <= now and
                         (bool(os.environ.get('PRW_REPORT_TO')) if key == 'email' else reporter.discord.enabled())]
@@ -81,6 +95,8 @@ def run(reporter, day, mailer, create=False, now=None, initial=False):
             subject = '[DELAYED] ' + subject
             body = f'Delayed report for {day}; original schedule 07:00 host-local.\n\n' + body
         for destination in destinations:
+            if not initial and not 0 <= current_time()-due(day) <= max_age:
+                break
             item = state[destination]
             item.update(status='inflight', attempts=item['attempts'] + 1)
             prw_storage.atomic(path, state)  # Fail closed before network/mail I/O.
@@ -98,7 +114,7 @@ def run(reporter, day, mailer, create=False, now=None, initial=False):
             if error is None:
                 item['status'] = 'success'
             elif destination == 'discord' and error.startswith('Discord HTTP ') and error != 'Discord HTTP 408':
-                item.update(status='pending', next=now + max(delay, min(86400, backoff * 2 ** (item['attempts']-1))))
+                item.update(status='pending', next=current_time() + max(delay, min(86400, backoff * 2 ** (item['attempts']-1))))
             else:
                 item['status'] = 'ambiguous'
             prw_storage.atomic(path, state)
@@ -113,14 +129,25 @@ def run(reporter, day, mailer, create=False, now=None, initial=False):
 
 
 def scheduled(reporter, mailer, now=None):
+    supplied_now = now
     now = time.time() if now is None else now
     local = dt.datetime.fromtimestamp(now)
     # Select latest due date, including yesterday's due report before today's 07:00.
     day = local.date() - dt.timedelta(days=1 if local.hour >= 7 else 2)
     catchup = os.environ.get('PRW_DAILY_CATCHUP_ENABLED', 'false').lower() == 'true'
+    directory = reporter.LOG_DIR / 'daily'
+    if directory.exists():
+        directory = prw_storage.directory(directory)
+        for request in directory.glob('????-??-??.requested'):
+            try:
+                if now-due(request.stem) > settings()[0]:
+                    request.unlink()
+            except ValueError:
+                continue
     began = time.monotonic()
     for offset in range(3):
         if time.monotonic()-began > 120:
             break
         candidate = (day-dt.timedelta(days=offset)).isoformat()
-        run(reporter, candidate, mailer, create=catchup and offset == 0, now=now)
+        run(reporter, candidate, mailer, create=catchup and offset == 0,
+            now=None if supplied_now is None else now + max(0, time.monotonic()-began))

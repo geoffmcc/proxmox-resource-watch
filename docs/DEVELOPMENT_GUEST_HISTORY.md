@@ -131,3 +131,13 @@ units remain unchanged. See git diff baseline for exact file inventory.
 Field Notes: prepared and published a1,109-word post (6 minute read); blog check,
 build and four validation tests passed; local HTTP returned200. Shared handoff saved
 outside the project. No project code or production service was installed.
+
+## Subsequent independent review corrections
+
+The review of commit `9db3b01` found eight issues despite the initial acceptance
+results above. They are corrected in the subsequent feature-branch changes;
+see [finding resolution and current evidence](PRE_PR_REVIEW_FIXES.md). Preserve
+the earlier results as historical measurements, not the current readiness verdict.
+The updated benchmark includes adjacent-day context and asserts adverse inputs
+inside its measured window. The immediate reader now preserves conflict metadata,
+while primary threshold, escalation, transport and cooldown behavior is retained.

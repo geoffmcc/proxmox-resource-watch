@@ -38,7 +38,7 @@ def normalize(data, node):
             continue
         cpu, cores = item.get('cpu'), item.get('maxcpu')
         mem, maximum = item.get('mem'), item.get('maxmem')
-        guests.append(dict(vmid=vmid, type=kind, name=prw_discord.clean(item.get('name', 'unknown'), 80),
+        guests.append(dict(vmid=vmid, type=kind, name=prw_discord.clean_identifier(item.get('name', 'unknown'), 80),
                            state='running', uptime=item.get('uptime') if number(item.get('uptime')) else None,
                            cpu_percent_capacity=cpu * 100 if number(cpu, 0, 1) else None,
                            vcpus=cores if number(cores, 1, 4096) else None,
@@ -156,7 +156,7 @@ def observations(reporter, day):
     return result
 
 
-def lines(reporter, day, windows=()):
+def lines(reporter, day, windows=(), uncertain=False):
     observed = observations(reporter, day)
     out = ['GUEST ACTIVITY (sampled; contribution and cause unknown)', f'Guest snapshots: {len(observed)}; sampling is sparse, gaps are unknown; input capped at 16 MiB/day.']
     scores, previous, segments = {}, {}, {}
@@ -165,7 +165,7 @@ def lines(reporter, day, windows=()):
             cpu = guest.get('cpu_percent_capacity')
             if not number(cpu, 0, 100):
                 continue
-            name = prw_discord.clean(guest.get('name', 'unknown'), 80)
+            name = prw_discord.clean_identifier(guest.get('name', 'unknown'), 80)
             key = (guest['type'], guest['vmid'])
             uptime = guest.get('uptime')
             old = previous.get(key)
@@ -188,7 +188,10 @@ def lines(reporter, day, windows=()):
         overlaps = score['overlaps']
         if overlaps:
             stamp, peak = max(overlaps, key=lambda p: p[1])
-            out.append(f'  Confirmed temporal overlap: {len(overlaps)} snapshots; event-window peak {peak:.1f}% at {stamp.isoformat()}; elevated activity ' + ('observed (>=50% capacity).' if peak >= 50 else 'not observed (>=50% capacity).'))
+            if uncertain:
+                out.append(f'  Possible correlation: {len(overlaps)} snapshots share event timestamps, but host chronology or data is uncertain; overlap and contribution unknown.')
+            else:
+                out.append(f'  Confirmed temporal overlap: {len(overlaps)} snapshots; event-window peak {peak:.1f}% at {stamp.isoformat()}; elevated activity ' + ('observed (>=50% capacity).' if peak >= 50 else 'not observed (>=50% capacity).'))
         else:
             out.append('  No guest snapshot inside host event windows; contribution unknown.')
     if not scores:

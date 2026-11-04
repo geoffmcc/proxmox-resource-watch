@@ -107,3 +107,19 @@ Verify sampling, calendars and service results. Never alter guest or backup serv
 
 See [feature/security/rollback guide](GUEST_HISTORY_DELIVERY.md) and
 [development evidence](DEVELOPMENT_GUEST_HISTORY.md).
+
+
+## Pre-PR finding resolution gates
+
+- Run `python3 tests/test_review_fixes.py -v`: critical delivery with unavailable or
+  failing optional imports; durable scheduled intent under lock contention; slow
+  mail before numeric/HTTP-date Retry-After; fresh time across retry dates; invalid
+  zero CPU alert threshold and empty log directory; analytically known irregular
+  CPU intervals; midnight/overlap/missing cadence; timestamp precision; uncertain
+  daily/follow-up correlation through the actual loader; single-line guest names.
+- The history benchmark must assert that rollback, malformed/missing records,
+  sampling gaps and guest restarts occur in its measured window. It includes
+  adjacent-day report context but excludes API startup, transport, concurrency
+  and cgroup enforcement. Do not describe it as a full scheduled-service benchmark.
+- Preserve the original pre-PR review as historical evidence. Record corrections
+  and current checks separately in `docs/PRE_PR_REVIEW_FIXES.md`.

@@ -31,9 +31,6 @@ import importlib.util
 # Also support offline importlib-based callers.
 if str(Path(__file__).parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent))
-import prw_history
-import prw_guests
-import prw_daily
 
 _discord_spec = importlib.util.spec_from_file_location("prw_discord", Path(__file__).with_name("prw_discord.py"))
 discord = importlib.util.module_from_spec(_discord_spec)
@@ -49,9 +46,10 @@ CPU_WARNING_C = float(os.environ.get("PRW_CPU_WARNING_C", "85"))
 CPU_CRITICAL_C = float(os.environ.get("PRW_CPU_CRITICAL_C", "92"))
 
 
-def guest_context(day, windows):
+def guest_context(day, windows, uncertain=False):
     try:
-        return prw_guests.lines(_reporter(), day, windows)
+        import prw_guests
+        return prw_guests.lines(_reporter(), day, windows, uncertain=uncertain)
     except Exception:
         return ['Guest observations unavailable; contribution unknown.']
 
@@ -598,6 +596,7 @@ def report(day, rows, errors, context_rows=None, summary=None):
     rows = normalize_rows(rows)
     if summary is not None:
         summary.update(samples=len(rows), errors=errors, clock_uncertain=rows.clock_uncertain)
+        import prw_history
         stats = prw_history.aggregate(_reporter(), day, rows, errors)['metrics'].get('cpu')
         summary['history'] = ('Host CPU weighted average ' + (f"{stats['average']:.1f}%" if stats['average'] is not None else 'unavailable') + f"; coverage {stats['coverage']:.1%}. Per-sensor baselines in full report.") if stats else 'Insufficient historical data.'
     title = f"Proxmox Resource Report | {socket.gethostname()} | {day}"
@@ -734,7 +733,8 @@ def report(day, rows, errors, context_rows=None, summary=None):
                         summary['context'].append(label)
         out.append("")
         out.extend(event_lines(event, evidence=evidence))
-    guest_lines = guest_context(day, [(e["first"], e["last"]) for e in found])
+    guest_lines = guest_context(day, [(e["first"], e["last"]) for e in found],
+                                uncertain=bool(errors or rows.clock_uncertain or rows.data_uncertain))
     out += ["", *guest_lines, ""]
     if summary is not None:
         summary['guest'] = next((line.strip() for line in guest_lines if 'Confirmed temporal overlap:' in line),
@@ -846,9 +846,11 @@ def main():
                         default=os.environ.get("PRW_MAILER", "auto"))
     args = parser.parse_args()
     if args.scheduled:
+        import prw_daily
         prw_daily.scheduled(_reporter(), args.mailer)
         return
     if args.tracked or args.initial:
+        import prw_daily
         if args.date or args.discord_test:
             parser.error("tracked delivery cannot use --date or --discord-test")
         day = (dt.datetime.now().astimezone().date()-dt.timedelta(days=1)).isoformat()
@@ -873,6 +875,7 @@ def main():
     context = combine_rows(previous, rows, following)
     summary = {} if args.send and discord.enabled() else None
     subject, body = report(day, rows, errors + previous_errors + following_errors, context, summary)
+    import prw_history
     body += "\n" + "\n".join(prw_history.comparison(_reporter(), day, rows, errors)) + "\n"
     if args.send:
         send_report(subject, body, args.mailer, day, summary)

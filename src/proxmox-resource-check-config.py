@@ -37,13 +37,15 @@ def validate(values):
             try:
                 number = float(value)
                 low, high = NUMBERS[key]
-                if not math.isfinite(number) or not low <= number <= high or (key in INTEGER and not re.fullmatch(r'[0-9]+', value)):
+                if not math.isfinite(number) or not low <= number <= high or (key == 'PRW_ALERT_CPU_PERCENT' and number == 0) or (key in INTEGER and not re.fullmatch(r'[0-9]+', value)):
                     raise ValueError()
                 numeric[key] = number
             except (ValueError, OverflowError):
                 errors.append(label + ': invalid numeric value or range')
         elif key in BOOLS and value.lower() not in ('true', 'false'):
             errors.append(label + ': expected true or false')
+        elif key == 'PRW_LOG_DIR' and not value:
+            errors.append(label + ': dedicated absolute directory required')
         elif key in PATHS and value:
             path = Path(value)
             if not path.is_absolute() or '..' in path.parts or any(ord(c) < 32 for c in value) or any(parent.is_symlink() for parent in (path, *path.parents)):

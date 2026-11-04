@@ -18,42 +18,68 @@ def aggregate(reporter, day, rows, errors=0):
     runs = {}
     uncertain = bool(errors or rows.clock_uncertain or rows.data_uncertain)
     stamps = [stamp.timestamp() for stamp, _ in rows]
+    cpu_run = 0
+    previous_end = None
     for index, (stamp, row) in enumerate(rows):
         now = stamps[index]
-        period = row.get('sample_seconds')
-        if not reporter.finite(period) or not 0 < period <= reporter.INTERVAL * 2.5:
-            period = reporter.INTERVAL
-        next_stamp = stamps[index + 1] if index + 1 < len(stamps) else now
-        gap = next_stamp - now
-        weight = min(period, gap, end-now) if 0 < gap <= reporter.INTERVAL * 2.5 and not uncertain else 0
-        if now < start or now >= end:
+        if now < start or now > end:
             continue
-        values = {'cpu': row.get('host_cpu_busy_percent')}
-        values.update({'sensor:' + key: value for key, value in row['temperatures_c'].items() if reporter.is_cpu_sensor(key)})
-        for key in set(runs) - set(values):
+        # CPU is an interval average measured BEFORE this timestamp, not an
+        # instantaneous reading. Clip support at midnight and prior observations.
+        cpu = row.get('host_cpu_busy_percent')
+        period = row.get('sample_seconds')
+        valid_period = reporter.finite(period) and 0 < period <= reporter.INTERVAL * 2.5
+        valid_cpu = reporter.finite(cpu) and 0 <= cpu <= 100
+        if valid_cpu:
+            peaks['cpu'] = max(peaks.get('cpu', cpu), cpu)
+            left = max(start, now-period) if valid_period else now
+            # Watcher timestamps are truncated to whole seconds, whereas elapsed
+            # cadence retains fractions. Subsecond discrepancies are quantization,
+            # not evidence of a restart or a missing full sample.
+            tolerance = 1 if previous_end is not None and now.is_integer() and previous_end.is_integer() else 1e-6
+            contiguous = previous_end is not None and left <= previous_end + tolerance
+            if previous_end is not None:
+                left = max(left, previous_end)
+            support = max(0, min(now, end)-left) if valid_period and not uncertain else 0
+            totals['cpu'] = totals.get('cpu', 0) + cpu * support
+            seconds['cpu'] = seconds.get('cpu', 0) + support
+            if not contiguous:
+                cpu_run = 0
+            previous_run = cpu_run
+            cpu_run = cpu_run + support if support and cpu >= reporter.CPU_THRESHOLD else 0
+            if previous_run < reporter.SUSTAINED_SECONDS <= cpu_run:
+                cpu_count += 1
+        else:
+            cpu_run = 0
+        previous_end = now
+
+        # Temperatures are instantaneous observations: integrate only adjacent
+        # valid endpoints. The next row's elapsed cadence describes this gap.
+        following = rows[index+1][1] if index+1 < len(rows) else {}
+        next_stamp = stamps[index+1] if index+1 < len(stamps) else now
+        gap = next_stamp-now
+        next_period = following.get('sample_seconds')
+        if not reporter.finite(next_period) or not 0 < next_period <= reporter.INTERVAL * 2.5:
+            next_period = reporter.INTERVAL
+        weight = min(next_period, gap, end-now) if 0 < gap <= reporter.INTERVAL * 2.5 and not uncertain else 0
+        values = {'sensor:' + key: value for key, value in row['temperatures_c'].items() if reporter.is_cpu_sensor(key)}
+        for key in set(runs)-set(values):
             runs[key] = 0
         for key, value in values.items():
-            following = rows[index+1][1] if index+1 < len(rows) else {}
-            other = following.get('host_cpu_busy_percent') if key == 'cpu' else following.get('temperatures_c', {}).get(key[7:])
-            next_valid = reporter.finite(other) and (0 <= other <= 100 if key == 'cpu' else -50 <= other <= 150)
+            other = following.get('temperatures_c', {}).get(key[7:])
+            next_valid = reporter.finite(other) and -50 <= other <= 150
             support = weight if next_valid else 0
-            valid = reporter.finite(value) and (0 <= value <= 100 if key == 'cpu' else -50 <= value <= 150)
-            if not valid:
+            if not reporter.finite(value) or not -50 <= value <= 150:
                 runs[key] = 0
                 continue
             peaks[key] = max(peaks.get(key, value), value)
             totals[key] = totals.get(key, 0) + ((value+other)/2 if next_valid else value) * support
             seconds[key] = seconds.get(key, 0) + support
-            threshold = reporter.CPU_THRESHOLD if key == 'cpu' else reporter.TEMP_THRESHOLD
             previous = runs.get(key, 0)
-            runs[key] = previous + support if value >= threshold and next_valid and other >= threshold and support else 0
+            runs[key] = previous + support if value >= reporter.TEMP_THRESHOLD and next_valid and other >= reporter.TEMP_THRESHOLD and support else 0
             if previous < reporter.SUSTAINED_SECONDS <= runs[key]:
-                if key == 'cpu':
-                    cpu_count += 1
-                else:
-                    hot_count[key] = hot_count.get(key, 0) + 1
-            if key != 'cpu' and runs[key] >= reporter.SUSTAINED_SECONDS:
-                # Include the run's initial confirmed support once, then extend.
+                hot_count[key] = hot_count.get(key, 0) + 1
+            if runs[key] >= reporter.SUSTAINED_SECONDS:
                 hot_seconds[key] = hot_seconds.get(key, 0) + (runs[key] if previous < reporter.SUSTAINED_SECONDS else support)
     metrics = {}
     for key in peaks:

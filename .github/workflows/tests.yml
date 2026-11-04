@@ -28,6 +28,8 @@ jobs:
         run: python tests/benchmark_history.py
       - name: New direct regression invocation
         run: python tests/test_guest_history_daily.py -v
+      - name: Pre-PR failure-path regressions
+        run: python tests/test_review_fixes.py -v
       - name: Python syntax
         run: python -m py_compile src/*.py tests/*.py
       - name: Installer shell syntax

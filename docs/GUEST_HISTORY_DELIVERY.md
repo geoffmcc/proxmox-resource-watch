@@ -43,7 +43,7 @@ working-set size. Missing/invalid values remain unavailable. No guest counter
 deltas are computed, so counter resets cannot produce negative CPU or large spikes.
 
 Snapshots include time, VMID, name, type, running state, uptime, assigned vCPUs,
-CPU and memory utilization. Names are scrubbed of URLs, controls and mention/markup
+CPU and memory utilization. Names use single-line sanitization, removing embedded line breaks as well as URLs, controls and mention/markup
 characters. Daily summaries split observation segments on uptime/name changes,
 clock reversal and gaps. Identical metadata can conceal VMID reuse; no immutable
 guest identity is claimed. Segments are evidence groupings, not guest lifetimes.
@@ -54,6 +54,8 @@ across a missing interval. The >=50% assigned-capacity label denotes an observed
 high-activity snapshot, not a universal workload threshold. Reports show the top ten
 segments, prioritizing observed overlap and then daily peak; guests outside that selection may also have contributed.
 Neither observed activity nor temporal overlap establishes heat generation or cause.
+Host clock rollback, conflicting duplicate observations or input errors downgrade
+overlap to possible correlation; uncertainty is preserved in daily and follow-up paths.
 
 Illustrative output (values are examples, not promises):
 
@@ -72,15 +74,21 @@ Malformed files, input caps, cache staleness and sparse observations limit confi
 
 The daily report includes average and peak host CPU, separate CPU-sensor averages
 and peaks, sustained load/temperature counts and confirmed elevated-temperature
-seconds. Integration requires two adjacent valid endpoints; high time requires
-both endpoints high. No trailing interval after the last reading is assumed.
-Irregular intervals are capped by recorded cadence and the existing gap threshold.
+seconds. CPU utilization is an average over the recorded interval ending at each
+sample timestamp; it is integrated over that preceding interval, clipped at day
+boundaries and prior observations. Missing or invalid CPU cadence supplies no
+coverage. Whole-second sampler timestamp precision is allowed for continuity,
+without extending integrated support. Temperature integration requires two adjacent
+valid endpoints; confirmed high time requires both endpoints high. No trailing
+temperature interval after the last reading is assumed. Irregular temperature
+intervals use the following sample's elapsed cadence and the existing gap threshold.
 Duplicate timestamps are normalized once; conflicting readings mark uncertainty.
 Clock rollback or parse/input-limit errors suppress averages and confirmed durations.
 Missing sensors and missing values never become zeros. Readings outside -50..150 C
 or CPU outside 0..100% are excluded from historical statistics.
 
-Averages use trapezoidal time weighting, with at least 80% valid daily support.
+Temperature averages use trapezoidal time weighting; CPU averages weight the
+measured preceding intervals. Both need at least 80% valid daily support.
 Host-local midnight boundaries are converted separately to handle 23/25-hour DST
 days. Baselines require four supported complete calendar dates in each seven-day
 period and compare identical sensor labels only. The report compares its date with
@@ -108,7 +116,12 @@ The daily timer remains at 07:00 host local with Persistent=false. It targets a 
 scheduled oneshot using `--tracked`. A separate five-minute maintenance timer uses
 `--scheduled` for pending retries and optional catch-up; no daemon is added.
 `PRW_DAILY_CATCHUP_ENABLED=false` defaults to preserving the no-catch-up policy.
-When true, maintenance creates only the most recent due report, never a backlog.
+The scheduled service durably records a private `<date>.requested` intent before
+competing for the worker lock. Maintenance resumes such an already-requested report
+even when catch-up is disabled; contention cannot discard the 07:00 request. Once
+the durable ledger exists it owns the request, and the marker is removed. Expired
+request markers are cleaned without sending stale reports.
+When catch-up is true, maintenance also creates only the most recent due report, never a backlog.
 Before 07:00 that is the report due at yesterday's 07:00, not a premature report
 for the day that has just ended. Delayed reports identify the data date and delay.
 
@@ -117,6 +130,8 @@ for the day that has just ended. Delayed reports identify the data date and dela
 `PRW_DAILY_RETRY_SECONDS=900` (300–86400) gives exponential minimum backoff,
 capped at 24 hours except a larger Discord Retry-After is always respected.
 Both numeric and HTTP-date Retry-After values are supported on daily sends.
+Backoff begins when the transport attempt finishes, after report generation and
+email delivery. Each candidate uses fresh time; age is checked again before sends.
 Maintenance considers up to three eligible dates, preserving pending jobs through
 midnight and the next 07:00. Wall-clock rollback cannot create a future-date report;
 a future retry deadline waits rather than sending early. DST uses local civil dates.
@@ -159,7 +174,11 @@ currently deprecated. Numeric ranges, booleans, thresholds, recipients, enabled
 Discord prerequisites and dedicated non-symlink paths are checked. This validates
 configuration shape, not mail deliverability or installed API compatibility.
 
-Immediate alert code, cooldown handling and its unit are unchanged. New oneshots
+Immediate alert thresholds, delivery, cooldown handling and its unit retain their
+existing behavior. Its bounded reader now preserves duplicate-data confidence for
+follow-ups. Guest, history and daily-worker modules are imported only in their
+execution paths, so unavailable or broken optional modules cannot prevent the
+immediate checker from starting. New oneshots
 retain ProtectSystem=strict, NoNewPrivileges, PrivateTmp, private umask, swap denial,
 OOM policy and deadlines. Only the existing private log directory and required mail
 spool are writable. New services use TasksMax=32; guests have 64 MiB/15 seconds,

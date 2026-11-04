@@ -23,6 +23,11 @@ def clean(value, limit=800):
     return text[:limit] or 'unavailable'
 
 
+def clean_identifier(value, limit=80):
+    """Names are single-line metadata, unlike formatted message bodies."""
+    return clean(' '.join(str(value).splitlines()), limit)
+
+
 def payload(title, description, color):
     return {'allowed_mentions': {'parse': [], 'users': [], 'roles': [], 'replied_user': False},
             'embeds': [{'title': clean(title, 120), 'description': clean(description, 1800), 'color': color}]}
