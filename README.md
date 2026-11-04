@@ -172,14 +172,16 @@ units' resource limits.
 | Immediate alert | 128 MiB | 120 seconds |
 | Daily report | 512 MiB | 300 seconds |
 | Supplemental follow-up | 256 MiB | 210 seconds |
+| Guest collection | 256 MiB | 15 seconds |
 | Jellyfin snapshot | 64 MiB | 15 seconds |
 
 Each unit uses `MemorySwapMax=0`, `OOMPolicy=kill` and a ten-second stop timeout.
 If the memory limit is exhausted, the unit fails and its remaining processes are
 killed rather than allowing a partial worker to continue. The sampler retains
 its existing restart-on-failure policy; notification/helper timers invoke their
-services again on their normal schedules. A failed daily report is not immediately
-retried, and a follow-up claimed before failure is not retried. These limits
+services again on their normal schedules. Daily delivery uses bounded
+per-destination retry policies, and a follow-up claimed before failure is not
+retried. These limits
 trade availability of an oversized job for containment; inspect the unit journal
 for `oom-kill` or timeout failures before considering a host-specific override.
 Input limits do not imply a fixed Python RSS ceiling, and a process stuck in

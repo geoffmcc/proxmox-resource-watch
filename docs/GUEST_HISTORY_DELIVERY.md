@@ -181,8 +181,13 @@ execution paths, so unavailable or broken optional modules cannot prevent the
 immediate checker from starting. New oneshots
 retain ProtectSystem=strict, NoNewPrivileges, PrivateTmp, private umask, swap denial,
 OOM policy and deadlines. Only the existing private log directory and required mail
-spool are writable. New services use TasksMax=32; guests have 64 MiB/15 seconds,
-reports 512 MiB/300 seconds. Guest subprocess reads are capped at 2 MiB and eight
+spool are writable. New services use TasksMax=32; guests have 256 MiB/15 seconds,
+reports 512 MiB/300 seconds. On one deployment host, the 64 MiB candidate limit
+killed the collector: a separate read-only `pvesh` query used about 175 MiB RSS.
+With explicit operator approval, a guest-only 256 MiB limit was tested; collection
+succeeded with about 155 MiB peak cgroup memory. Other Proxmox versions and hosts
+may differ; verify effective limits and actual collection in the target environment.
+Guest subprocess reads are capped at 2 MiB and eight
 seconds, kill its process group on timeout, and suppress stderr. Existing report
 subprocess/evidence limits remain. The private directory owner must match the service
 user and no group/other access is allowed; state reads reject symlinks and nonregular

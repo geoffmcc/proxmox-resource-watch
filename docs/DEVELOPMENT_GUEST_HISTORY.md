@@ -141,3 +141,23 @@ the earlier results as historical measurements, not the current readiness verdic
 The updated benchmark includes adjacent-day context and asserts adverse inputs
 inside its measured window. The immediate reader now preserves conflict metadata,
 while primary threshold, escalation, transport and cooldown behavior is retained.
+
+
+## Guest collector resource-limit correction
+
+The earlier 64 MiB / 15-second guest-unit budget was an unverified candidate
+limit, not a measurement of a live Proxmox query. During explicitly authorized
+pre-release deployment, the first guest unit was killed at 64 MiB. A bounded,
+read-only `pvesh` query on that host measured approximately 175 MiB peak RSS.
+The operator explicitly approved a 256 MiB guest-only limit. A host-specific
+systemd override produced successful guest observations, with approximately
+155 MiB cgroup peak and the existing 15-second deadline, 32-task limit, zero
+swap and hardening intact. Two runs succeeded; CPU data was present for the
+observed running guests. Other unit limits and guest allocations were unchanged.
+
+The branch unit now carries the measured 256 MiB budget directly, so a host
+starting from this candidate does not require the temporary override. Resource
+use on other Proxmox versions/hosts and controlled exhaustion behavior still
+need verification. The actual mail and Discord catch-up calls were accepted;
+recipient receipt was not independently verified. This is a pre-release branch,
+not a merged release.

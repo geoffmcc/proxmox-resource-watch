@@ -2,6 +2,11 @@
 
 ## [0.2.0] - Unreleased
 
+- Set the guest-only service memory limit to 256 MiB after the original 64 MiB
+  limit killed a real collection: `pvesh` alone used approximately 175 MiB RSS
+  on the test host, and a 256 MiB guest unit completed with a 155 MiB cgroup peak.
+
+
 - Resolve the eight pre-PR review findings: isolate optional imports from critical alerts, preserve scheduled intent across lock contention, start Discord backoff at response time, align config validation with runtime, integrate preceding CPU intervals, preserve uncertain guest correlation, sanitize single-line names, and measure adverse histories inside the benchmark window.
 - Preserve conflict confidence through the follow-up loader and account for whole-second sampler timestamps when counting continuous CPU activity.
 
