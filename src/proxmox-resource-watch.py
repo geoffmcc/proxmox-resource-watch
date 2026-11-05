@@ -11,6 +11,13 @@ from pathlib import Path
 import time
 import tempfile
 import stat
+import signal
+import threading
+import sys
+
+if str(Path(__file__).parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).parent))
+import prw_storage
 
 INTERVAL = int(os.environ.get("PRW_INTERVAL", "10"))
 RETENTION_DAYS = int(os.environ.get("PRW_RETENTION_DAYS", "30"))
@@ -97,6 +104,11 @@ def sensors():
 
 
 def maintenance(today):
+    with prw_storage.log_lock(LOG_DIR):
+        _maintenance(today)
+
+
+def _maintenance(today):
     cutoff = today - dt.timedelta(days=RETENTION_DAYS - 1)
     # Do not compress yesterday: a late report can still read uncompressed data.
     for path in LOG_DIR.glob("????-??-??.jsonl"):
@@ -137,6 +149,17 @@ def maintenance(today):
             path.unlink()
 
 
+def append_sample(log_path, row):
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError("Monitoring log must be a regular file")
+    with os.fdopen(fd, "a", encoding="utf-8") as output:
+        output.write(json.dumps(row, separators=(",", ":")) + "\n")
+        output.flush()
+        os.fsync(output.fileno())
+
+
 def main():
     if INTERVAL < 1 or not 1 <= RETENTION_DAYS <= 3650:
         raise ValueError("Invalid interval or retention setting")
@@ -146,13 +169,17 @@ def main():
     if os.geteuid() == 0 and LOG_DIR.stat().st_uid != 0:
         raise ValueError("Log directory must be owned by root")
     os.chmod(LOG_DIR, 0o700)
+    stopping = threading.Event()
+    def request_stop(signum, frame):
+        stopping.set()
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
     previous_total, previous_idle = cpu_ticks()
     previous_proc = process_ticks()
     previous_time = time.monotonic()
     previous_stamp = dt.datetime.now().astimezone()
     last_day = None
-    while True:
-        time.sleep(INTERVAL)
+    while not stopping.wait(INTERVAL):
         now = time.monotonic()
         total, idle = cpu_ticks()
         elapsed = now - previous_time
@@ -181,13 +208,12 @@ def main():
                "clock_discontinuity": abs((stamp-previous_stamp).total_seconds()-elapsed) > 2,
                "host_cpu_busy_percent": busy_cpu, "load_average_1_5_15": load,
                **sensors(), "top_processes": processes[:5]}
+        if stopping.is_set():
+            break
         log_path = LOG_DIR / f"{day.isoformat()}.jsonl"
-        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            os.close(fd)
-            raise OSError("Monitoring log must be a regular file")
-        with os.fdopen(fd, "a", encoding="utf-8") as output:
-            output.write(json.dumps(row, separators=(",", ":")) + "\n")
+        with prw_storage.log_lock(LOG_DIR):
+            if not stopping.is_set():
+                append_sample(log_path, row)
         previous_total, previous_idle, previous_proc, previous_time = total, idle, current, now
         previous_stamp = stamp
 

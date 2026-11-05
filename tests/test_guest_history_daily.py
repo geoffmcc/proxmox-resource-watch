@@ -63,11 +63,11 @@ class Guests(unittest.TestCase):
                    (start+dt.timedelta(seconds=60), [dict(vmid=200, type='qemu', name='worker', uptime=5, cpu_percent_capacity=20)])]
         with mock.patch.object(guests, 'observations', return_value=records):
             output = '\n'.join(guests.lines(report, '2026-11-01', [(start+dt.timedelta(seconds=50), start+dt.timedelta(seconds=70))]))
-        self.assertIn('segment 2', output)
-        self.assertIn('event-window peak 20.0%', output)
-        self.assertNotIn('event-window peak 90.0%', output)
+        self.assertIn('observation period 2', output)
+        self.assertIn('in those checks: 20.0%', output)
+        self.assertNotIn('in those checks: 90.0%', output)
         with mock.patch.object(guests, 'observations', return_value=[]):
-            self.assertIn('unavailable', '\n'.join(guests.lines(report, '2026-11-01')))
+            self.assertIn('No guest activity readings were available', '\n'.join(guests.lines(report, '2026-11-01')))
 
     def test_optional_failure_isolated(self):
         with mock.patch.object(guests, 'lines', side_effect=RecursionError()):
@@ -150,7 +150,7 @@ class Daily(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(report, 'LOG_DIR', Path(self.tmp.name)))
         self.stack.enter_context(mock.patch.object(report, 'rows_for', return_value=(report.normalize_rows([]),0)))
         self.stack.enter_context(mock.patch.object(report, 'report', return_value=('Report','body')))
-        self.stack.enter_context(mock.patch.object(report, 'summary_message', return_value={'embeds':[{'title':'Daily'}]}))
+        self.stack.enter_context(mock.patch.object(report, 'summary_message', return_value=report.discord.payload('Daily', 'Summary', 1)))
         self.stack.enter_context(mock.patch.object(history, 'comparison', return_value=['history']))
         self.mail = self.stack.enter_context(mock.patch.object(report, 'deliver'))
         self.stack.enter_context(mock.patch.object(report.discord, 'enabled', return_value=True))
@@ -165,6 +165,8 @@ class Daily(unittest.TestCase):
         self.assertEqual(self.mail.call_count,1)
         self.assertEqual(self.discord.call_count,1)
         self.assertIn('DELAYED',self.mail.call_args.args[0])
+        self.assertIn('## NOTES', self.discord.call_args.kwargs['attachment'])
+        self.assertLess(self.mail.call_args.args[1].index('history'), self.mail.call_args.args[1].index('NOTES'))
         self.assertEqual(self.state()['email']['status'],'success')
 
     def test_partial_retry_restart(self):

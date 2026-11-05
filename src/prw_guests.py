@@ -158,7 +158,10 @@ def observations(reporter, day):
 
 def lines(reporter, day, windows=(), uncertain=False):
     observed = observations(reporter, day)
-    out = ['GUEST ACTIVITY (sampled; contribution and cause unknown)', f'Guest snapshots: {len(observed)}; sampling is sparse, gaps are unknown; input capped at 16 MiB/day.']
+    out = ['GUEST ACTIVITY', '--------------', '',
+           f'The monitor checked guests {len(observed)} times. These are snapshots, so activity between checks may be missed.',
+           '',
+           'A host event means CPU use or temperature crossed the report threshold. Being active during an event does not prove a guest caused it.']
     scores, previous, segments = {}, {}, {}
     for stamp, guests in observed:
         for guest in guests:
@@ -184,19 +187,29 @@ def lines(reporter, day, windows=(), uncertain=False):
             if any(start <= stamp <= end for start, end in windows):
                 score['overlaps'].append((stamp, cpu))
     for (kind, vmid, name, segment), score in sorted(scores.items(), key=lambda p: (bool(p[1]['overlaps']), p[1]['peak']), reverse=True)[:10]:
-        out.append(f"{kind.upper()} {vmid} {name} (observation segment {segment}): daily peak {score['peak']:.1f}% assigned CPU capacity; {score['count']} observations.")
+        guest_type = 'VM' if kind == 'qemu' else 'Container'
+        count = score['count']
+        out.extend(['', f"{guest_type} {vmid} {name} (observation period {segment})",
+                    f"  Highest CPU use in this period: {score['peak']:.1f}% of its assigned capacity, across {count} {'check' if count == 1 else 'checks'}."])
         overlaps = score['overlaps']
         if overlaps:
             stamp, peak = max(overlaps, key=lambda p: p[1])
+            checks = 'check' if len(overlaps) == 1 else 'checks'
             if uncertain:
-                out.append(f'  Possible correlation: {len(overlaps)} snapshots share event timestamps, but host chronology or data is uncertain; overlap and contribution unknown.')
+                out.append(f'  Timing uncertain: {len(overlaps)} {checks} appear to fall during host events, but missing or uncertain data means the timing and contribution cannot be confirmed.')
             else:
-                out.append(f'  Confirmed temporal overlap: {len(overlaps)} snapshots; event-window peak {peak:.1f}% at {stamp.isoformat()}; elevated activity ' + ('observed (>=50% capacity).' if peak >= 50 else 'not observed (>=50% capacity).'))
+                activity = 'reached' if peak >= 50 else 'did not reach'
+                times = 'time' if len(overlaps) == 1 else 'times'
+                when = stamp.strftime('%Y-%m-%d %I:%M:%S %p %z')
+                out.append(f'  During host events, {name} was checked {len(overlaps)} {times}.')
+                out.append(f'  Highest recorded CPU use in those checks: {peak:.1f}% at {when}; it {activity} the 50% activity threshold.')
         else:
-            out.append('  No guest snapshot inside host event windows; contribution unknown.')
+            out.append('  No checks fell during a host event, so its activity during those events is unknown.')
     if not scores:
-        out.append('Guest observations unavailable; no activity inferred.')
-    out.append('Snapshots do not establish sustained activity between observations. Guest CPU is never added to host CPU. Indistinguishable VMID reuse cannot be ruled out.')
+        out.append('')
+        out.append('No guest activity readings were available.')
+    out.append('')
+    out.append('Guest CPU is already included in host CPU use. If a guest ID was reused without a detectable change, readings could belong to different guests.')
     return out
 
 

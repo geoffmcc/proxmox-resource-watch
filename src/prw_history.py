@@ -100,7 +100,7 @@ def comparison(reporter, day, rows, errors=0):
         prior = (date-dt.timedelta(days=offset)).isoformat()
         history, failures = reporter.rows_for(prior, include_legacy=False)
         recent.append(aggregate(reporter, prior, history, failures))
-    out = ['HISTORICAL COMPARISON', 'Averages need >=80% daily coverage; baselines need >=4 comparable complete days per seven-day period.']
+    out = ['HISTORICAL COMPARISON', '---------------------', '', 'A day needs at least 80% coverage for its average. A baseline needs at least 4 comparable days from the preceding 7 days.']
     for key, value in sorted(current['metrics'].items()):
         label = 'Host CPU (%)' if key == 'cpu' else reporter.discord.clean(key[7:], 120).replace('\n', ' ') + ' (C)'
         average = f"{value['average']:.1f}" if value['average'] is not None else 'unavailable (insufficient coverage or uncertain clock)'
@@ -117,14 +117,15 @@ def comparison(reporter, day, rows, errors=0):
             if value['average'] is not None:
                 line += f"; difference {value['average']-baseline7:+.1f}"
         else:
-            line += '; insufficient historical data for baseline'
+            available = sum(1 for r in recent[:7] if key in r['metrics'] and r['metrics'][key]['average'] is not None)
+            line += f'; insufficient historical data for baseline ({available} of 4 comparable days needed)'
         if current7 is not None and preceding7 is not None:
             line += f'; current seven-day period versus preceding period {current7-preceding7:+.1f}'
         supported_events = [r['metrics'][key]['events'] for r in recent[:7] if key in r['metrics'] and r['metrics'][key]['average'] is not None and r['metrics'][key]['events'] is not None]
         if len(supported_events) >= 4:
             line += f'; previous seven-day sustained events/day {sum(supported_events)/len(supported_events):.1f} ({len(supported_events)} supported days)'
-        out.append(line)
+        out.extend(['', label + ':', *(f'  {part}' for part in line[len(label) + 2:].split('; '))])
     if not current['metrics']:
         out.append('Insufficient historical data; no baseline established.')
-    out.append('Missing intervals are unknown. Sensor identities are compared separately; renamed sensors start a new baseline.')
+    out.extend(['', 'Missing intervals are unknown. Sensor identities are compared separately; renamed sensors start a new baseline.'])
     return out
