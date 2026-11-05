@@ -37,7 +37,7 @@ case " ${ID:-} ${ID_LIKE:-} " in
   *debian*|*ubuntu*) ;;
   *) fail 'Supported host OS: Debian/Ubuntu (including Proxmox VE).';;
 esac
-for command_name in python3 systemctl install cp date; do
+for command_name in python3 systemctl install cp date stat; do
   command -v "$command_name" >/dev/null || fail "Missing required command: $command_name"
 done
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Python 3.10+ is required.'
@@ -61,6 +61,7 @@ for item in "${unit_names[@]}"; do
   [[ -r "$PROJECT_DIR/systemd/$item" ]] || fail "Missing systemd/$item"
 done
 [[ -r "$PROJECT_DIR/config/proxmox-resource-watch.conf.example" ]] || fail 'Missing example config.'
+[[ -r "$PROJECT_DIR/installer/preflight.sh" ]] || fail 'Missing installer preflight.'
 
 if [[ -f $CONFIG_DST ]]; then
   say "Existing configuration will be preserved: $CONFIG_DST"
@@ -68,10 +69,33 @@ else
   say 'New installation: default email is addressed to root via Mutt.'
 fi
 say 'Install will preserve existing logs, back up replaced files, restart only the watcher service,'
-say 'send one initial report and enable the daily-report, immediate-alert and optional follow-up timers.'
+say 'check the initial report ledger and enable the daily-report, immediate-alert and optional follow-up timers.'
 say 'The follow-up timer runs only when PRW_FOLLOWUP_ENABLED=true. Guest collection is separately opt-in.'
+# All destination checks happen before the first write or service change. The
+# fixed parents are administrator-controlled; this also rules out unprivileged
+# replacement between preflight and install on a correctly configured host.
+# shellcheck source=installer/preflight.sh
+source "$PROJECT_DIR/installer/preflight.sh"
+for parent in "$SCRIPT_DST" "$UNIT_DST"; do
+  [[ -d $parent ]] || fail 'Required installation directory is missing.'
+  prw_safe_directory "$parent" || fail 'Unsafe installation directory.'
+done
+prw_safe_directory /var/backups/proxmox-resource-watch || fail 'Unsafe backup directory.'
+prw_safe_directory "$LOG_DST" || fail 'Unsafe monitoring directory.'
+prw_safe_config "$CONFIG_DST" || fail 'Unsafe configuration target.'
+if [[ -d $LOG_DST ]]; then
+  prw_safe_target "$LOG_DST/alert-state.json" || fail 'Unsafe alert state target.'
+fi
+for item in "${script_names[@]}"; do
+  prw_safe_target "$SCRIPT_DST/$item" || fail 'Unsafe script target.'
+done
+for item in "${unit_names[@]}"; do
+  prw_safe_target "$UNIT_DST/$item" || fail 'Unsafe unit target.'
+  prw_safe_directory "$UNIT_DST/$item.d" || fail 'Unsafe unit drop-in directory.'
+done
+
 if ((DRY_RUN)); then
-  say 'DRY RUN — no files, services, timers or email have been changed.'
+  say 'DRY RUN — destination preflight passed; no files, services, timers or email have been changed.'
   exit 0
 fi
 ((EUID == 0)) || fail 'Run as root (or sudo) to install.'
@@ -89,6 +113,7 @@ fi
 
 backup_dir="/var/backups/proxmox-resource-watch/$(date +%Y%m%d-%H%M%S)-$$"
 install -d -o root -g root -m 0700 "$backup_dir"
+say "Recovery backup directory: $backup_dir"
 # Shared upgrade policy: preserve records, enforce a private real directory.
 secure_log_directory() {
   local target=$1
@@ -99,7 +124,6 @@ secure_log_directory() {
   chown root:root -- "$target"
   chmod 0700 -- "$target"
 }
-secure_log_directory "$LOG_DST"
 backup_if_exists() {
   local target=$1
   if [[ -e $target ]]; then
@@ -107,16 +131,22 @@ backup_if_exists() {
   fi
 }
 
-for item in "${script_names[@]}"; do
-  backup_if_exists "$SCRIPT_DST/$item"
-  install -o root -g root -m 0750 "$PROJECT_DIR/src/$item" "$SCRIPT_DST/$item"
-done
+# Complete the backup before replacing any installed file. A failed backup
+# therefore leaves the old installation untouched.
+for item in "${script_names[@]}"; do backup_if_exists "$SCRIPT_DST/$item"; done
 for item in "${unit_names[@]}"; do
   backup_if_exists "$UNIT_DST/$item"
-  install -o root -g root -m 0644 "$PROJECT_DIR/systemd/$item" "$UNIT_DST/$item"
+  backup_if_exists "$UNIT_DST/$item.d"
 done
 backup_if_exists "$CONFIG_DST"
 backup_if_exists "$LOG_DST/alert-state.json"
+secure_log_directory "$LOG_DST"
+for item in "${script_names[@]}"; do
+  install -o root -g root -m 0750 "$PROJECT_DIR/src/$item" "$SCRIPT_DST/$item"
+done
+for item in "${unit_names[@]}"; do
+  install -o root -g root -m 0644 "$PROJECT_DIR/systemd/$item" "$UNIT_DST/$item"
+done
 preserve_configuration() {
   local source=$1 target=$2
   [[ ! -L $target ]] || fail 'Configuration must not be a symlink.'
@@ -133,8 +163,8 @@ systemctl enable proxmox-resource-watch.service
 systemctl restart proxmox-resource-watch.service
 systemctl is-active --quiet proxmox-resource-watch.service || fail 'Sampler did not start; inspect journalctl -u proxmox-resource-watch.service.'
 
-# Validate report delivery before enabling recurring notifications.
-say 'Sending one daily report now to verify the configured mail transport...'
+# An existing successful delivery record suppresses a duplicate report.
+say 'Checking initial report delivery; an already successful delivery will not be sent again...'
 systemctl start proxmox-resource-report.service || fail 'Email delivery failed; inspect journalctl -u proxmox-resource-report.service. Timers not enabled.'
 systemctl start proxmox-resource-alert.service || fail 'Alert check failed; inspect journalctl -u proxmox-resource-alert.service. Timers not enabled.'
 systemctl enable --now proxmox-resource-report.timer proxmox-resource-alert.timer proxmox-resource-followup.timer proxmox-resource-daily.timer proxmox-resource-guests.timer
@@ -145,5 +175,5 @@ systemctl is-active --quiet proxmox-resource-followup.timer || fail 'Follow-up t
 
 say 'Installation complete. Monitoring, primary notification timers and the optional context timer are active.'
 say "Original logs were not deleted. Backups of replaced files: $backup_dir"
-say 'Confirm the installation report arrived in your mailbox.'
+say 'If a new installation report was sent, confirm it arrived in your mailbox.'
 systemctl list-timers proxmox-resource-report.timer proxmox-resource-alert.timer proxmox-resource-followup.timer --no-pager

@@ -31,7 +31,7 @@ bash install.sh --dry-run
 sudo bash install.sh
 ```
 
-The installer preserves existing settings and logs, backs up replaced files, restarts the sampler, and tests initial report delivery. A failed upgrade does not automatically roll back; inspect the service journal before retrying. See the [installation and upgrade details](docs/OPERATIONS.md#installation) for mail setup, legacy logs, and security boundaries.
+The installer preserves existing settings and logs, backs up replaced files, restarts the sampler, and checks initial report delivery. An existing successful delivery record suppresses a duplicate, so a repeat install does not necessarily test the current mail transport. A failed upgrade does not automatically roll back; inspect the service journal before retrying. See the [installation and upgrade details](docs/OPERATIONS.md#installation) for mail setup, legacy logs, and security boundaries.
 
 ## Default alerts
 
@@ -64,6 +64,7 @@ python3 /usr/local/sbin/proxmox-resource-report.py --date "$(date +%F)"
 - [Operations and technical reference](docs/OPERATIONS.md): installation, upgrades, security, alert behavior, Discord, Jellyfin, follow-ups, resource limits, and troubleshooting.
 - [Guest activity, historical comparisons, and daily delivery](docs/GUEST_HISTORY_DELIVERY.md): configuration, coverage, retries, and rollback.
 - [Release checklist](docs/RELEASE_CHECKLIST.md): testing and deployment acceptance.
+- [Security policy](SECURITY.md) and [security assessment](docs/SECURITY_ASSESSMENT.md): private reporting and review findings.
 
 Logs and reports can contain sensitive process or guest information. Keep the log directory restricted and share reports only with trusted recipients.
 
