@@ -123,3 +123,22 @@ See [feature/security/rollback guide](GUEST_HISTORY_DELIVERY.md) and
   and cgroup enforcement. Do not describe it as a full scheduled-service benchmark.
 - Preserve the original pre-PR review as historical evidence. Record corrections
   and current checks separately in `docs/PRE_PR_REVIEW_FIXES.md`.
+
+## Production security gate (new candidates)
+
+Record each item in a private deployment record before any production action:
+
+1. Exact source commit and immutable reviewed release identifier; verify `git rev-parse HEAD` and commit signature if policy requires it.
+2. Actual Regression tests, Static analysis, CodeQL Python, Secret detection, Workflow security, installer and systemd check results for that commit.
+3. Independent security review status and disposition of every Critical or High finding.
+4. Inventory existing installation, service enablement, timers, unit drop-ins, config ownership/mode, and historical state.
+5. Back up configuration and private state without printing values; preserve all JSONL/gzip records.
+6. Back up installed units and drop-ins, and record installed script/unit hashes.
+7. Perform `bash install.sh --dry-run` and a disposable upgrade rehearsal with equivalent unit/drop-in and mail behavior.
+8. Obtain explicit operator approval for the exact candidate and maintenance window.
+9. Install from the identified commit; do not execute a remote pipe-to-shell script.
+10. Check service status, effective unit properties, recent sampler timestamps, timer calendars, and private file modes.
+11. Verify delivery through a safe administrator-approved message, without synthetic thermal events or destructive test alerts.
+12. If any check fails, stop affected Resource Watch timers, preserve current logs and state, restore scripts/config/units/drop-ins from the recorded backup, reload systemd, restore captured timer state, and verify sampling and delivery. Restoring earlier alert state can resend an alert; record that ambiguity.
+
+This checklist is a deployment gate, not evidence that it has been performed. CI never installs to the hypervisor. Signed tags, checksums, provenance and an SBOM can be added if a packaged release is introduced; the present installation uses reviewed source files and has no production Python packages.

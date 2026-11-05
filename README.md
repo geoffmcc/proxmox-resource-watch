@@ -64,6 +64,7 @@ python3 /usr/local/sbin/proxmox-resource-report.py --date "$(date +%F)"
 - [Operations and technical reference](docs/OPERATIONS.md): installation, upgrades, security, alert behavior, Discord, Jellyfin, follow-ups, resource limits, and troubleshooting.
 - [Guest activity, historical comparisons, and daily delivery](docs/GUEST_HISTORY_DELIVERY.md): configuration, coverage, retries, and rollback.
 - [Release checklist](docs/RELEASE_CHECKLIST.md): testing and deployment acceptance.
+- [Security policy](SECURITY.md) and [security assessment](docs/SECURITY_ASSESSMENT.md): private reporting and review findings.
 
 Logs and reports can contain sensitive process or guest information. Keep the log directory restricted and share reports only with trusted recipients.
 

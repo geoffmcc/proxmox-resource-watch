@@ -37,7 +37,7 @@ case " ${ID:-} ${ID_LIKE:-} " in
   *debian*|*ubuntu*) ;;
   *) fail 'Supported host OS: Debian/Ubuntu (including Proxmox VE).';;
 esac
-for command_name in python3 systemctl install cp date; do
+for command_name in python3 systemctl install cp date stat; do
   command -v "$command_name" >/dev/null || fail "Missing required command: $command_name"
 done
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Python 3.10+ is required.'
@@ -61,6 +61,7 @@ for item in "${unit_names[@]}"; do
   [[ -r "$PROJECT_DIR/systemd/$item" ]] || fail "Missing systemd/$item"
 done
 [[ -r "$PROJECT_DIR/config/proxmox-resource-watch.conf.example" ]] || fail 'Missing example config.'
+[[ -r "$PROJECT_DIR/installer/preflight.sh" ]] || fail 'Missing installer preflight.'
 
 if [[ -f $CONFIG_DST ]]; then
   say "Existing configuration will be preserved: $CONFIG_DST"
@@ -86,6 +87,26 @@ fi
 if [[ ! -f $CONFIG_DST ]]; then
   command -v mutt >/dev/null || fail 'Mutt is not installed. Install/configure a mailer or prepare an existing config before installing.'
 fi
+
+# All destination checks happen before the first write or service change. The
+# fixed parents are administrator-controlled; this also rules out unprivileged
+# replacement between preflight and install on a correctly configured host.
+# shellcheck source=installer/preflight.sh
+source "$PROJECT_DIR/installer/preflight.sh"
+for parent in "$SCRIPT_DST" "$UNIT_DST" /var/backups/proxmox-resource-watch; do
+  prw_safe_directory "$parent" || fail 'Unsafe installation directory.'
+done
+prw_safe_directory "$LOG_DST" || fail 'Unsafe monitoring directory.'
+prw_safe_target "$CONFIG_DST" || fail 'Unsafe configuration target.'
+if [[ -d $LOG_DST ]]; then
+  prw_safe_target "$LOG_DST/alert-state.json" || fail 'Unsafe alert state target.'
+fi
+for item in "${script_names[@]}"; do
+  prw_safe_target "$SCRIPT_DST/$item" || fail 'Unsafe script target.'
+done
+for item in "${unit_names[@]}"; do
+  prw_safe_target "$UNIT_DST/$item" || fail 'Unsafe unit target.'
+done
 
 backup_dir="/var/backups/proxmox-resource-watch/$(date +%Y%m%d-%H%M%S)-$$"
 install -d -o root -g root -m 0700 "$backup_dir"
