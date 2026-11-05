@@ -71,8 +71,31 @@ fi
 say 'Install will preserve existing logs, back up replaced files, restart only the watcher service,'
 say 'send one initial report and enable the daily-report, immediate-alert and optional follow-up timers.'
 say 'The follow-up timer runs only when PRW_FOLLOWUP_ENABLED=true. Guest collection is separately opt-in.'
+# All destination checks happen before the first write or service change. The
+# fixed parents are administrator-controlled; this also rules out unprivileged
+# replacement between preflight and install on a correctly configured host.
+# shellcheck source=installer/preflight.sh
+source "$PROJECT_DIR/installer/preflight.sh"
+for parent in "$SCRIPT_DST" "$UNIT_DST"; do
+  [[ -d $parent ]] || fail 'Required installation directory is missing.'
+  prw_safe_directory "$parent" || fail 'Unsafe installation directory.'
+done
+prw_safe_directory /var/backups/proxmox-resource-watch || fail 'Unsafe backup directory.'
+prw_safe_directory "$LOG_DST" || fail 'Unsafe monitoring directory.'
+prw_safe_config "$CONFIG_DST" || fail 'Unsafe configuration target.'
+if [[ -d $LOG_DST ]]; then
+  prw_safe_target "$LOG_DST/alert-state.json" || fail 'Unsafe alert state target.'
+fi
+for item in "${script_names[@]}"; do
+  prw_safe_target "$SCRIPT_DST/$item" || fail 'Unsafe script target.'
+done
+for item in "${unit_names[@]}"; do
+  prw_safe_target "$UNIT_DST/$item" || fail 'Unsafe unit target.'
+  prw_safe_directory "$UNIT_DST/$item.d" || fail 'Unsafe unit drop-in directory.'
+done
+
 if ((DRY_RUN)); then
-  say 'DRY RUN — no files, services, timers or email have been changed.'
+  say 'DRY RUN — destination preflight passed; no files, services, timers or email have been changed.'
   exit 0
 fi
 ((EUID == 0)) || fail 'Run as root (or sudo) to install.'
@@ -88,28 +111,9 @@ if [[ ! -f $CONFIG_DST ]]; then
   command -v mutt >/dev/null || fail 'Mutt is not installed. Install/configure a mailer or prepare an existing config before installing.'
 fi
 
-# All destination checks happen before the first write or service change. The
-# fixed parents are administrator-controlled; this also rules out unprivileged
-# replacement between preflight and install on a correctly configured host.
-# shellcheck source=installer/preflight.sh
-source "$PROJECT_DIR/installer/preflight.sh"
-for parent in "$SCRIPT_DST" "$UNIT_DST" /var/backups/proxmox-resource-watch; do
-  prw_safe_directory "$parent" || fail 'Unsafe installation directory.'
-done
-prw_safe_directory "$LOG_DST" || fail 'Unsafe monitoring directory.'
-prw_safe_target "$CONFIG_DST" || fail 'Unsafe configuration target.'
-if [[ -d $LOG_DST ]]; then
-  prw_safe_target "$LOG_DST/alert-state.json" || fail 'Unsafe alert state target.'
-fi
-for item in "${script_names[@]}"; do
-  prw_safe_target "$SCRIPT_DST/$item" || fail 'Unsafe script target.'
-done
-for item in "${unit_names[@]}"; do
-  prw_safe_target "$UNIT_DST/$item" || fail 'Unsafe unit target.'
-done
-
 backup_dir="/var/backups/proxmox-resource-watch/$(date +%Y%m%d-%H%M%S)-$$"
 install -d -o root -g root -m 0700 "$backup_dir"
+say "Recovery backup directory: $backup_dir"
 # Shared upgrade policy: preserve records, enforce a private real directory.
 secure_log_directory() {
   local target=$1
@@ -120,7 +124,6 @@ secure_log_directory() {
   chown root:root -- "$target"
   chmod 0700 -- "$target"
 }
-secure_log_directory "$LOG_DST"
 backup_if_exists() {
   local target=$1
   if [[ -e $target ]]; then
@@ -128,16 +131,22 @@ backup_if_exists() {
   fi
 }
 
-for item in "${script_names[@]}"; do
-  backup_if_exists "$SCRIPT_DST/$item"
-  install -o root -g root -m 0750 "$PROJECT_DIR/src/$item" "$SCRIPT_DST/$item"
-done
+# Complete the backup before replacing any installed file. A failed backup
+# therefore leaves the old installation untouched.
+for item in "${script_names[@]}"; do backup_if_exists "$SCRIPT_DST/$item"; done
 for item in "${unit_names[@]}"; do
   backup_if_exists "$UNIT_DST/$item"
-  install -o root -g root -m 0644 "$PROJECT_DIR/systemd/$item" "$UNIT_DST/$item"
+  backup_if_exists "$UNIT_DST/$item.d"
 done
 backup_if_exists "$CONFIG_DST"
 backup_if_exists "$LOG_DST/alert-state.json"
+secure_log_directory "$LOG_DST"
+for item in "${script_names[@]}"; do
+  install -o root -g root -m 0750 "$PROJECT_DIR/src/$item" "$SCRIPT_DST/$item"
+done
+for item in "${unit_names[@]}"; do
+  install -o root -g root -m 0644 "$PROJECT_DIR/systemd/$item" "$UNIT_DST/$item"
+done
 preserve_configuration() {
   local source=$1 target=$2
   [[ ! -L $target ]] || fail 'Configuration must not be a symlink.'

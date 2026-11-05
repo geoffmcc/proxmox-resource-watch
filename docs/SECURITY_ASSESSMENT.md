@@ -1,5 +1,7 @@
 # Production hardening assessment
 
+**Follow-up:** See [PR #13 follow-up security evidence](SECURITY_FOLLOWUP.md) for the current installer, configuration decision, individual Bandit findings, and verified repository settings. The text below records the earlier implementation assessment.
+
 Baseline: `431fd7df505338fdbe4c77d06c2e67cc1c77abb6` on `origin/main`, fetched before the feature branch. Read [the baseline and threat model](SECURITY_BASELINE.md) first. This is an offline assessment, not production certification.
 
 ## Confirmed findings and disposition

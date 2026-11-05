@@ -16,8 +16,11 @@ for item in report['results']:
     print(f'{severity}: {rule} in {name}:{item["line_number"]}')
     # B108 flags a forbidden /tmp directory in the path validator; it is not
     # a created temporary file. This precise source location is reviewed.
+    source_line = ''
+    if name == 'proxmox-resource-check-config.py':
+        source_line = Path('src/proxmox-resource-check-config.py').read_text().splitlines()[item['line_number'] - 1].strip()
     justified = (rule == 'B108' and name == 'proxmox-resource-check-config.py'
-                 and "Path('/tmp')" in Path('src/proxmox-resource-check-config.py').read_text().splitlines()[item['line_number'] - 1])
+                 and source_line == "if path in (Path('/'), Path('/tmp'), Path('/var'), Path('/var/log'), Path('/etc'), Path('/usr')):")
     if severity in ('MEDIUM', 'HIGH') and not justified:
         failures.append(item)
 if failures:

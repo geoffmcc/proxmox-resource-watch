@@ -774,7 +774,8 @@ class InstallerPreservationTests(unittest.TestCase):
 
     def test_upgrade_permission_function_in_temporary_directory(self):
         source = (PROJECT/'install.sh').read_text()
-        function = source[source.index('secure_log_directory() {'):source.index('secure_log_directory "$LOG_DST"')]
+        start = source.index('secure_log_directory() {')
+        function = source[start:source.index('\n}\n', start) + 2]
         with tempfile.TemporaryDirectory() as directory:
             logs = Path(directory)/'logs'; logs.mkdir(mode=0o755)
             record = logs/'history.jsonl'; record.write_bytes(b'preserve existing logs')

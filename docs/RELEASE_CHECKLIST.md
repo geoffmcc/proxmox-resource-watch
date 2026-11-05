@@ -126,19 +126,21 @@ See [feature/security/rollback guide](GUEST_HISTORY_DELIVERY.md) and
 
 ## Production security gate (new candidates)
 
+PR #13 follow-up evidence and actual repository-setting status are in [SECURITY_FOLLOWUP.md](SECURITY_FOLLOWUP.md). At the time of that review, `main` had no protection/ruleset and secret scanning, push protection, Dependabot security features, and private vulnerability reporting were disabled. Treat those as open administrator actions, not completed gates.
+
 Record each item in a private deployment record before any production action:
 
-1. Exact source commit and immutable reviewed release identifier; verify `git rev-parse HEAD` and commit signature if policy requires it.
+1. Exact source commit and immutable reviewed release identifier; verify `git remote -v`, `git rev-parse HEAD`, the reviewed diff, and commit signature if policy requires it. Export that fixed commit SHA into a root-owned, non-group/other-writable staging directory; verify staged script, unit and preflight hashes against the reviewed tree immediately before running the installer as root. Do not run a root installer from a user-writable checkout or install an unreviewed tree.
 2. Actual Regression tests, Static analysis, CodeQL Python, Secret detection, Workflow security, installer and systemd check results for that commit.
 3. Independent security review status and disposition of every Critical or High finding.
 4. Inventory existing installation, service enablement, timers, unit drop-ins, config ownership/mode, and historical state.
 5. Back up configuration and private state without printing values; preserve all JSONL/gzip records.
-6. Back up installed units and drop-ins, and record installed script/unit hashes.
+6. Back up installed units and drop-ins, and record installed script/unit hashes. Verify the installer's complete pre-replacement backup and record post-install hashes for every installed script and unit.
 7. Perform `bash install.sh --dry-run` and a disposable upgrade rehearsal with equivalent unit/drop-in and mail behavior.
 8. Obtain explicit operator approval for the exact candidate and maintenance window.
 9. Install from the identified commit; do not execute a remote pipe-to-shell script.
 10. Check service status, effective unit properties, recent sampler timestamps, timer calendars, and private file modes.
 11. Verify delivery through a safe administrator-approved message, without synthetic thermal events or destructive test alerts.
-12. If any check fails, stop affected Resource Watch timers, preserve current logs and state, restore scripts/config/units/drop-ins from the recorded backup, reload systemd, restore captured timer state, and verify sampling and delivery. Restoring earlier alert state can resend an alert; record that ambiguity.
+12. If any check fails, follow [controlled recovery](OPERATIONS.md#controlled-recovery-after-an-incomplete-upgrade): stop affected Resource Watch timers, preserve current logs and state, restore prior scripts/units and changed drop-ins from the recorded backup, reload systemd, restore captured timer state, and verify sampling and delivery. Do not automatically rewind alert/delivery state; an ambiguous send can cause duplicates.
 
 This checklist is a deployment gate, not evidence that it has been performed. CI never installs to the hypervisor. Signed tags, checksums, provenance and an SBOM can be added if a packaged release is introduced; the present installation uses reviewed source files and has no production Python packages.
