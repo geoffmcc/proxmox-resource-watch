@@ -173,6 +173,34 @@ s.main()
         content = (PROJECT / "src" / "proxmox-resource-watch.py").read_text()
         self.assertIn('f"{prefix}:{label}"', content)
 
+    def test_sensors_read_synthetic_sysfs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hwmon = root / 'hwmon' / 'hwmon0'
+            hwmon.mkdir(parents=True)
+            (root / 'drm').mkdir()
+            for name, value in {
+                'name': 'k10temp', 'temp1_label': 'Tctl',
+                'temp1_input': '87500', 'temp2_input': 'not-a-number',
+                'fan1_input': '1200',
+            }.items():
+                (hwmon / name).write_text(value)
+
+            def fixture_path(value):
+                if value == '/sys/class/hwmon':
+                    return root / 'hwmon'
+                if value == '/sys/class/drm':
+                    return root / 'drm'
+                return Path(value)
+
+            with mock.patch.object(sampler, 'Path', side_effect=fixture_path):
+                result = sampler.sensors()
+            self.assertEqual(len(result['temperatures_c']), 1)
+            self.assertEqual(next(iter(result['temperatures_c'].values())), 87.5)
+            self.assertTrue(next(iter(result['temperatures_c'])).endswith(':Tctl'))
+            self.assertEqual(list(result['fans_rpm'].values()), [1200])
+            self.assertIsNone(result['gpu_busy_percent'])
+
     def test_cpu_ticks_proc_stat(self):
         with mock.patch.object(sampler, "read", return_value="cpu 1 2 3 4 5 6 7 8 9 10"):
             self.assertEqual(sampler.cpu_ticks(), (36, 9))
