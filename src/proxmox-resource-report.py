@@ -27,6 +27,9 @@ import zlib
 import signal
 import heapq
 import importlib.util
+import io
+import html
+import textwrap
 
 # Also support offline importlib-based callers.
 if str(Path(__file__).parent) not in sys.path:
@@ -128,10 +131,11 @@ def clean_row(row):
 
 class NormalizedRows(list):
     """Internal canonical rows; consumers must treat row dictionaries as read-only."""
-    def __init__(self, rows=(), clock_uncertain=False, data_uncertain=False):
+    def __init__(self, rows=(), clock_uncertain=False, data_uncertain=False, recovered=0):
         super().__init__(rows)
         self.clock_uncertain = clock_uncertain
         self.data_uncertain = data_uncertain
+        self.recovered = recovered
 
 
 def normalize_rows(rows, clock_uncertain=False, *, _already_clean=False, data_uncertain=False):
@@ -182,15 +186,17 @@ def normalize_rows(rows, clock_uncertain=False, *, _already_clean=False, data_un
 def combine_rows(*parts):
     """Merge canonical day windows without recleaning or mutating their rows."""
     ordered = sorted((item for part in parts for item in part), key=lambda pair: pair[0])
-    return normalize_rows(ordered, any(part.clock_uncertain for part in parts), _already_clean=True,
-                          data_uncertain=any(part.data_uncertain for part in parts))
+    combined = normalize_rows(ordered, any(part.clock_uncertain for part in parts), _already_clean=True,
+                              data_uncertain=any(part.data_uncertain for part in parts))
+    combined.recovered = sum(part.recovered for part in parts)
+    return combined
 
 
 def rows_for(day, include_legacy=True):
     sources = [LOG_DIR / f"{day}.jsonl", LOG_DIR / f"{day}.jsonl.gz"]
     if include_legacy:
         sources += [LEGACY, LEGACY.with_suffix(".jsonl.1")]
-    rows, errors = [], 0
+    rows, errors, recovered = [], 0, 0
     clock_uncertain = False
     for path in sources:
         previous_stamp = None
@@ -207,13 +213,19 @@ def rows_for(day, include_legacy=True):
                         errors += 1
                         break
                     try:
-                        row = json.loads(line)
+                        has_null_prefix = line.startswith(b'\x00')
+                        if has_null_prefix and not line.endswith(b'\n'):
+                            raise ValueError('incomplete recovered record')
+                        row = json.loads(line.lstrip(b'\x00').decode('utf-8') if has_null_prefix else line)
                         stamp = timestamp(row["time"])
                         if previous_stamp is not None and stamp < previous_stamp:
                             clock_uncertain = True
                         previous_stamp = stamp
                         if stamp.date().isoformat() == day:
                             rows.append((stamp, row))
+                            if has_null_prefix:
+                                recovered += 1
+                                errors += 1
                     except (ValueError, KeyError, TypeError, RecursionError):
                         errors += 1
                 if consumed >= MAX_BYTES or len(rows) >= MAX_ROWS:
@@ -222,7 +234,97 @@ def rows_for(day, include_legacy=True):
             continue
         except (OSError, EOFError, zlib.error):
             errors += 1
-    return normalize_rows(sorted(rows, key=lambda pair: pair[0]), clock_uncertain), errors
+    normalized = normalize_rows(sorted(rows, key=lambda pair: pair[0]), clock_uncertain,
+                                data_uncertain=bool(recovered))
+    normalized.recovered = recovered
+    return normalized, errors
+
+
+def repair_completed_days(days):
+    """Repair only fully validated closed daily files; preserve originals exclusively."""
+    import prw_storage
+    messages = []
+    for day in sorted(set(days)):
+        date = dt.date.fromisoformat(day)
+        for suffix in ('.jsonl', '.jsonl.gz'):
+            path = LOG_DIR / (day + suffix)
+            try:
+                with prw_storage.log_lock(LOG_DIR):
+                    if date >= dt.datetime.now().astimezone().date():
+                        continue
+                    with regular_open(path) as source:
+                        info = os.fstat(source.fileno())
+                        raw = source.read(MAX_BYTES + 1)
+                    if len(raw) > MAX_BYTES:
+                        continue
+                    if suffix.endswith('.gz'):
+                        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+                            data = stream.read(MAX_BYTES + 1)
+                    else:
+                        data = raw
+                    if len(data) > MAX_BYTES:
+                        continue
+                    lines = data.splitlines(keepends=True)
+                    if not lines or len(lines) > MAX_ROWS:
+                        continue
+                    fixed, count = [], 0
+                    for line in lines:
+                        if len(line) > MAX_LINE or not line.endswith(b'\n'):
+                            raise ValueError('Incomplete or oversized record')
+                        candidate = line.lstrip(b'\x00') if line.startswith(b'\x00') else line
+                        row = json.loads(candidate.decode('utf-8'))
+                        if not isinstance(row, dict) or timestamp(row['time']).date() != date:
+                            raise ValueError('Invalid record date')
+                        count += candidate != line
+                        fixed.append(candidate)
+                    backup = path.with_name(path.name + '.prw-original')
+                    previous_backup = LOG_DIR / (day + '.jsonl.prw-original')
+                    if not count:
+                        if backup.is_file() or (suffix.endswith('.gz') and previous_backup.is_file()):
+                            messages.append(f'{day}: an original log backup from an earlier repair is retained; other data may have been lost.')
+                        continue
+                    backup_fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(backup_fd, 'wb') as original:
+                        original.write(raw)
+                        original.flush()
+                        os.fsync(original.fileno())
+                    directory_fd = os.open(LOG_DIR, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        os.fsync(directory_fd)
+                        result = b''.join(fixed)
+                        if suffix.endswith('.gz'):
+                            result = gzip.compress(result, mtime=0)
+                        fd, tmp = tempfile.mkstemp(prefix='.repair-', dir=LOG_DIR)
+                        try:
+                            with os.fdopen(fd, 'wb') as output:
+                                os.fchmod(output.fileno(), stat.S_IMODE(info.st_mode))
+                                os.fchown(output.fileno(), info.st_uid, info.st_gid)
+                                output.write(result)
+                                output.flush()
+                                os.fsync(output.fileno())
+                            current = os.stat(path, follow_symlinks=False)
+                            if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns):
+                                raise OSError('Log changed during repair')
+                            os.replace(tmp, path)
+                            os.fsync(directory_fd)
+                        finally:
+                            if os.path.exists(tmp):
+                                os.unlink(tmp)
+                    finally:
+                        os.close(directory_fd)
+                    messages.append(f'{day}: repaired {count} sample(s) with leading null bytes; original saved as {backup.name}. Other data may have been lost.')
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, KeyError, TypeError, EOFError, zlib.error, RecursionError):
+                messages.append(f'{day}: automatic log repair could not be completed; the report may contain damaged or incomplete data.')
+    return messages
+
+
+def describe_repairs(body, repairs):
+    if not repairs:
+        return body
+    first, separator, rest = body.partition('\n\n')
+    return first + separator + 'LOG REPAIR\n----------\n' + '\n'.join(repairs) + '\n\n' + rest
 
 
 def iter_temperature_events(rows):
@@ -520,6 +622,12 @@ def event_lines(event, include_workloads=True, evidence=None):
            f"    Peak: {temp_format(event['peak'])} at {event['peak_time'].isoformat()} ({event['sensor']})",
            "",
            "    Aggregate sampled CPU contributors (estimated core-seconds; one-core peak):"]
+    if event['duration'] == 0:
+        out[4] = '    Observed duration: less than one continuous sample interval; the actual duration is unknown (confirmed hot time: 0s).'
+    out.insert(1, '')
+    out.append('')
+    out.append('    A core-second estimates one CPU core working for one second during the observed hot intervals; it does not prove the process caused the heat.')
+    out.append('')
     scores = process_history(event["rows"], event["start"], event["last_hot"], event["hot_windows"])
     out += [f"      {s['name']} (PID {s['pid']}): ~{s['cpu_seconds']:.1f} core-s, peak {s['peak']:.1f}%, {s['samples']} samples" for s in scores[:5]] or ["      Unavailable"]
     if include_workloads:
@@ -605,7 +713,13 @@ def report(day, rows, errors, context_rows=None, summary=None):
         out.append("Clock ordering uncertain: recovery cannot be confirmed from this history.")
     if errors:
         out.append(f"Log read/parse errors: {errors}")
+    recovered = context_rows.recovered if isinstance(context_rows, NormalizedRows) else rows.recovered
+    if recovered:
+        out.append(f"Recovered {recovered} sample(s) from lines with damaged null-byte prefixes in the report or adjacent-day context. The original logs were not changed; other data may have been lost.")
+    if summary is not None:
+        summary['recovered'] = recovered
     if not rows:
+        out[3:3] = ['WHAT HAPPENED', '-------------', '', 'No samples were available, so the day could not be assessed.', '']
         out.extend(["", "No samples found for this date. Check the watcher service, log retention and filesystem."])
         return title, "\n".join(out) + "\n"
     timestamps = [stamp for stamp, _ in rows]
@@ -635,7 +749,7 @@ def report(day, rows, errors, context_rows=None, summary=None):
             score = process_scores[name]
             score["peak"] = max(score["peak"], proc.get("cpu_percent_one_core", 0))
             score["samples"] += 1
-    out += ["", "TEMPERATURES", ""]
+    out += ["", "TEMPERATURES", "------------", ""]
     out += [f"  {name}: avg {temp_format(statistics.mean(values))}, "
             f"min {temp_format(min(values))}, max {temp_format(max(values))}"
             for name, values in sorted(sensor_values.items())] or ["  Unavailable"]
@@ -644,11 +758,11 @@ def report(day, rows, errors, context_rows=None, summary=None):
         summary["peak"] = temp_format(max(peaks)) if peaks else "unavailable"
         summary["temperature_samples"] = sum(any(is_cpu_sensor(k) for k in r["temperatures_c"]) for _, r in rows)
     all_peaks = [(max(values), name) for name, values in sensor_values.items()]
+    cpu_peaks = [(max(values), name) for name, values in sensor_values.items() if is_cpu_sensor(name)]
     out += ["", "PEAK TEMPERATURE AND ASSESSMENT", "-------------------------------", ""]
     if all_peaks:
         value, label = max(all_peaks)
         out.append(f"Highest recorded sensor: {temp_format(value)} ({label})")
-        cpu_peaks = [(max(values), name) for name, values in sensor_values.items() if is_cpu_sensor(name)]
         if cpu_peaks:
             cpu_peak, cpu_label = max(cpu_peaks)
             out.append(f"Highest CPU sensor: {temp_format(cpu_peak)} ({cpu_label})")
@@ -660,6 +774,7 @@ def report(day, rows, errors, context_rows=None, summary=None):
                 out.append("Status: ELEVATED — brief or sustained warmth observed; below configured warning level.")
             else:
                 out.append("Status: OK — no CPU readings exceeded the configured temperature event threshold.")
+            out.append("")
             out.append(f"CPU thresholds: warning {temp_format(CPU_WARNING_C)}, critical {temp_format(CPU_CRITICAL_C)}.")
             out.append("These thresholds must be appropriate for your processor; they are not universal hardware limits.")
         else:
@@ -667,14 +782,17 @@ def report(day, rows, errors, context_rows=None, summary=None):
         out.append("Other sensor types (GPU, NVMe, memory, etc.) require their own device-specific limits.")
     else:
         out.append("Status: UNKNOWN — no temperature sensor readings available.")
-    out += ["", "FAN SPEEDS", ""]
-    out += [f"  {name}: {fmt_stats(values, ' RPM', 0)}" for name, values in sorted(fan_values.items())] or ["  Unavailable"]
+    out += ["", "FAN SPEEDS", "----------", ""]
+    out += [f"  {name}: {fmt_stats(values, ' RPM', 0)}" for name, values in sorted(fan_values.items())] or ["  No fan-speed readings were available, so fan speed cannot be assessed."]
     out += ["", "TOP PROCESSES (observed one-core CPU peaks)", "-------------------------------------------", ""]
+    out.append('100% means one logical CPU core; a process using multiple cores can exceed 100%. These daily peaks may not coincide with an event.')
+    out.append('')
     top = sorted(process_scores.items(), key=lambda kv: kv[1]["peak"], reverse=True)[:10]
     out += [f"  {name[:27]:27} peak {stats['peak']:6.1f}% | seen in {stats['samples']} samples"
             for name, stats in top] or ["  No processes above sampling threshold"]
     out += ["", f"THRESHOLD EVENTS (CPU >= {CPU_THRESHOLD:g}% or sensor >= {temp_format(TEMP_THRESHOLD)})",
             "----------------------------------------------------------", ""]
+    out.append('These lower thresholds flag activity worth investigating; crossing them is not necessarily a warning. CPU temperature warnings use the separate thresholds above.')
     found = events(rows)
     sustained = [e for e in found if e["samples"] * INTERVAL >= SUSTAINED_SECONDS]
     if summary is not None:
@@ -697,33 +815,51 @@ def report(day, rows, errors, context_rows=None, summary=None):
                 ", ".join(f"{n} {p:.1f}%" for n, p in during) if during else "unavailable"))
             if event["hot_sensor"]:
                 out.append("    Hottest sensor: " + event["hot_sensor"])
-    out += ["", f"SUSTAINED EVENTS (>= {SUSTAINED_SECONDS}s): {len(sustained)}; showing top 10", ""]
+    out += ["", f"SUSTAINED EVENTS (>= {SUSTAINED_SECONDS}s): {len(sustained)}; showing top 10", "----------------", ""]
     append_events(sustained, 10)
     if not sustained:
         out.append("  None recorded")
-    out += ["", f"BRIEF SPIKES (< {SUSTAINED_SECONDS}s): {len(brief)}; showing top 10", ""]
+    out += ["", f"BRIEF SPIKES (< {SUSTAINED_SECONDS}s): {len(brief)}; showing top 10", "------------", ""]
     append_events(brief, 10)
     if not brief:
         out.append("  None recorded")
     if gaps:
-        out += ["", "LARGEST SAMPLING GAPS", ""]
+        out += ["", "LARGEST SAMPLING GAPS", "---------------------", ""]
         for start, end, seconds in sorted(gaps, key=lambda item: item[2], reverse=True)[:5]:
             out.append(f"  {start:%H:%M:%S} to {end:%H:%M:%S}: {seconds:.0f}s")
-    out += ["", "CPU TEMPERATURE EVENTS", "----------------------"]
+    out += ["", "CPU TEMPERATURE EVENTS", "----------------------", ""]
     event_count = 0
     thermal_counts = collections.Counter()
+    recovery_counts = collections.Counter()
     def relevant_events():
         nonlocal event_count
         for event in iter_temperature_events(context_rows if context_rows is not None else rows):
             if event["start"].date().isoformat() <= day <= event["end"].date().isoformat():
                 event_count += 1
                 thermal_counts[event["level"]] += 1
+                recovery_counts['recovered' if event['recovery_time'] else 'unknown'] += 1
                 yield event
     selected = heapq.nlargest(MAX_EVENTS, relevant_events(), key=lambda e: e["peak"])
+    if cpu_peaks:
+        if cpu_peak >= CPU_CRITICAL_C:
+            overview = f'CPU temperature reached {temp_format(cpu_peak)}, at or above the critical setting of {temp_format(CPU_CRITICAL_C)}; investigate cooling and load promptly.'
+        elif cpu_peak >= CPU_WARNING_C:
+            overview = f'CPU temperature reached {temp_format(cpu_peak)}, at or above the warning setting of {temp_format(CPU_WARNING_C)} but below the critical setting of {temp_format(CPU_CRITICAL_C)}.'
+        else:
+            overview = f'Highest observed CPU temperature was {temp_format(cpu_peak)}, below the warning setting of {temp_format(CPU_WARNING_C)}.'
+    else:
+        overview = 'CPU temperature could not be assessed because no recognizable CPU sensor readings were available.'
+    if event_count:
+        overview += f" {event_count} CPU temperature event(s) were observed; {recovery_counts['recovered']} showed recovery and {recovery_counts['unknown']} have unknown or unresolved recovery."
+    if gaps:
+        overview += f' There were {len(gaps)} sampling gap(s); what happened during those gaps is unknown.'
+    if errors or rows.clock_uncertain or rows.data_uncertain:
+        overview += ' Some monitoring data or its timing is uncertain; see the details below.'
+    out[3:3] = ['WHAT HAPPENED', '-------------', '', overview, '']
     out.append(f"Events: {event_count}; showing at most {MAX_EVENTS} by peak")
     evidence = collect_evidence(min(e["start"] for e in selected), max(e["last_hot"] for e in selected)) if selected else ([], [])
     if summary is not None:
-        summary.update(thermal=dict(thermal_counts), context=[])
+        summary.update(thermal=dict(thermal_counts), context=[], overview=overview)
     for event in selected:
         if summary is not None:
             for line in workload_evidence(event['start'], event['last_hot'], evidence, event['hot_windows']):
@@ -737,18 +873,64 @@ def report(day, rows, errors, context_rows=None, summary=None):
                                 uncertain=bool(errors or rows.clock_uncertain or rows.data_uncertain))
     out += ["", *guest_lines, ""]
     if summary is not None:
-        summary['guest'] = next((line.strip() for line in guest_lines if 'Confirmed temporal overlap:' in line),
-                                'No guest snapshot confirms activity inside host event windows; contribution unknown.')
-    out += ["", "NOTES", "-----", "",
-            "Events are correlations, not proof that a process caused the heat or fan change.",
-            "Only sampled top processes are available; short-lived or lower-ranked processes can be missed.",
-            "Durations are estimates from observed sample intervals; gaps and unobserved time are excluded.",
-            "Per-process CPU is percent of one logical core; host CPU is across all cores.",
-            "Missing sensor data means unavailable, not zero.", ""]
+        summary['guest'] = next((line.strip() + ' ' + guest_lines[index+1].strip()
+                                 for index, line in enumerate(guest_lines[:-1]) if line.startswith('  During host events,')),
+                                'No guest checks can be confirmed during host events; their contribution is unknown.')
     body = "\n".join(out)
     if len(body) > 240000:
         body = body[:240000] + "\n[Report truncated at output limit]"
     return title, re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "?", body) + "\n"
+
+
+def complete_report(day, rows, errors, body):
+    import prw_history
+    notes = ["NOTES", "-----", "",
+             "Events are correlations, not proof that a process caused the heat or fan change.", "",
+             "Only sampled top processes are available; short-lived or lower-ranked processes can be missed.", "",
+             "Durations are estimates from observed sample intervals; gaps and unobserved time are excluded.", "",
+             "Per-process CPU is percent of one logical core; host CPU is across all cores.", "",
+             "Missing sensor data means unavailable, not zero."]
+    return body.rstrip() + "\n\n" + "\n".join(prw_history.comparison(_reporter(), day, rows, errors)) + "\n\n" + "\n".join(notes) + "\n"
+
+
+def markdown_report(body):
+    """Present the complete plain-text report with real Markdown structure."""
+    headings = ('WHAT HAPPENED', 'LOG REPAIR', 'RESOURCE SUMMARY', 'TEMPERATURES',
+                'PEAK TEMPERATURE AND ASSESSMENT', 'FAN SPEEDS', 'TOP PROCESSES',
+                'THRESHOLD EVENTS', 'SUSTAINED EVENTS', 'BRIEF SPIKES',
+                'LARGEST SAMPLING GAPS', 'CPU TEMPERATURE EVENTS', 'GUEST ACTIVITY',
+                'HISTORICAL COMPARISON', 'NOTES')
+    def escape(text):
+        text = html.escape(text, quote=False)
+        return re.sub(r'([\\`*_\[\]#])', r'\\\1', text)
+    output = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or re.fullmatch(r'[-=]{3,}', line):
+            continue
+        if line.startswith('Proxmox Resource Report |'):
+            output.append('# ' + escape(line))
+        elif any(line == heading or line.startswith(heading + ' ') or line.startswith(heading + ' (') for heading in headings):
+            output.append('## ' + escape(line))
+        elif raw[0].isspace():
+            output.append('- ' + escape(line))
+        else:
+            output.append(escape(line))
+    return '\n\n'.join(output) + '\n'
+
+
+def wrap_report_email(body, width=78):
+    """Wrap long report lines while retaining their indentation and words."""
+    lines = []
+    for line in body.splitlines():
+        if len(line) <= width:
+            lines.append(line)
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        lines.extend(textwrap.wrap(line.lstrip(), width=width, initial_indent=indent,
+                                   subsequent_indent=indent + '  ', break_long_words=False,
+                                   break_on_hyphens=False, replace_whitespace=False) or [''])
+    return '\n'.join(lines) + ('\n' if body.endswith('\n') else '')
 
 
 def deliver(subject, body, recipient, mailer):
@@ -812,19 +994,25 @@ def summary_message(day, summary):
         parts.append('GUEST CONTEXT (correlation only)\n' + summary['guest'])
     if summary.get('history'):
         parts.append('HISTORICAL CONTEXT\n' + summary['history'])
-    return discord.payload(f"Daily health | {socket.gethostname()} | {day}", "\n\n".join(parts), 0x3498DB)
+    overview = summary.get('overview', 'No samples were available, so the day could not be assessed.')
+    if summary.get('recovered'):
+        overview += f" Recovered {summary['recovered']} sample(s) from damaged lines; other data may have been lost."
+    if summary.get('repairs'):
+        overview += ' ' + ' '.join(summary['repairs'])
+    return discord.payload(f"Daily health | {socket.gethostname()} | {day}",
+                           overview + "\n\nFull report attached as resource-report.md.\n\n" + "\n\n".join(parts), 0x3498DB)
 
 
 def send_report(subject, body, mailer, day, summary):
     mail_error = None
     try:
-        deliver(subject, body, os.environ.get("PRW_REPORT_TO", ""), mailer)
+        deliver(subject, wrap_report_email(body), os.environ.get("PRW_REPORT_TO", ""), mailer)
     except Exception as exc:
         mail_error = exc
     discord_error = None
     if discord.enabled():
         try:
-            discord_error, _ = discord.send(summary_message(day, summary))
+            discord_error, _ = discord.send(summary_message(day, summary), daily=True, attachment=markdown_report(body))
         except Exception:
             discord_error = "Discord summary failed"
     if discord_error:
@@ -869,14 +1057,18 @@ def main():
         raise ValueError("Invalid interval, duration, or temperature thresholds")
     day = args.date or (dt.datetime.now().astimezone().date() - dt.timedelta(days=1)).isoformat()
     dt.date.fromisoformat(day)
+    date = dt.date.fromisoformat(day)
+    repairs = repair_completed_days([(date + dt.timedelta(days=offset)).isoformat() for offset in (-1, 0, 1)]) if args.send else []
     rows, errors = rows_for(day)
     previous, previous_errors = rows_for((dt.date.fromisoformat(day) - dt.timedelta(days=1)).isoformat())
     following, following_errors = rows_for((dt.date.fromisoformat(day) + dt.timedelta(days=1)).isoformat())
     context = combine_rows(previous, rows, following)
     summary = {} if args.send and discord.enabled() else None
     subject, body = report(day, rows, errors + previous_errors + following_errors, context, summary)
-    import prw_history
-    body += "\n" + "\n".join(prw_history.comparison(_reporter(), day, rows, errors)) + "\n"
+    body = complete_report(day, rows, errors, body)
+    body = describe_repairs(body, repairs)
+    if summary is not None:
+        summary['repairs'] = repairs
     if args.send:
         send_report(subject, body, args.mailer, day, summary)
     else:

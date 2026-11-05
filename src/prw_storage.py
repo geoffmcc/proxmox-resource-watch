@@ -3,7 +3,19 @@ import json
 import os
 from pathlib import Path
 import stat
+import fcntl
+from contextlib import contextmanager
 import tempfile
+
+
+@contextmanager
+def log_lock(directory):
+    fd = os.open(directory / '.log-io.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, 'r+') as lock:
+        if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+            raise ValueError('Invalid log lock')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def directory(path):

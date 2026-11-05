@@ -18,6 +18,7 @@ This small Python 3 utility runs on Proxmox VE (or other Debian/Ubuntu Linux hos
 - Host-wide CPU percentage, 1/5/15-minute load, and up to five busiest observed processes.
 - Available AMD GPU activity/VRAM counters, per-sensor temperatures and fan RPM.
 - 30 days of dated logs, compression of older dates, and preservation of legacy v1 gist logs.
+- On normal stop or shutdown, the sampler finishes any write already in progress and exits; completed samples are flushed and synced to storage.
 - Daily plain-text report at **07:00 host-local time** with Celsius and Fahrenheit (`83.0°C [181.4°F]`), top processes, sampling gaps, and brief/sustained spike analysis.
 - Near-real-time warnings with a roughly 10-second check interval, durable 30-minute per-alert cooldown, and re-arm after temperature/CPU recovery.
 - Native systemd services/timers, a conservative installer, and Python standard-library regression tests.
@@ -139,6 +140,8 @@ limit; this checks a realistic workload budget, not systemd/cgroup enforcement.
 - Mail services may require access to a local mail spool or Mutt-specific cache. The included unit files allow Postfix's usual maildrop location if present; review sandbox exceptions for your actual mail setup.
 - Sensors may be absent, and a missing reading means **unavailable**, not zero. Fan RPM isn't exposed by all mini PCs.
 - Retention removes matching dated logs beyond 30 calendar days. It does not touch unrelated files or the legacy gist log files. This is not a backup.
+- Syncing each sample improves durability but cannot guarantee an intact latest record during sudden power loss, a forced kill, storage failure, or a shutdown that exceeds systemd's stop timeout. Hardware and filesystem behavior also matter; missing or damaged records remain possible.
+- When a complete sample follows leading null bytes, scheduled or explicitly sent reports can repair a completed daily log only after validating every record. The original is retained as a private `.prw-original` backup and the report notes that other data may have been lost. Current-day logs are never repaired. If validation or backup fails, the log is left alone and the reader can still recover matching samples while marking the input uncertain. Backups are retained until an administrator removes them; other corruption is not automatically repaired.
 - If the machine or local mail system is unavailable, notifications can be delayed or lost; this isn't a safety-critical hardware protection system.
 
 ## License
@@ -222,9 +225,9 @@ The helper requires the Proxmox cgroup-v2 `/sys/fs/cgroup/lxc/ID/ns/init.scope` 
 
 ## Optional Discord notifications (v0.2.0 preview)
 
-Discord receives concise warning/critical embeds and a compact daily health summary
-from the existing **07:00 host-local** report service. Email remains the detailed,
-authoritative report. No bot, OAuth, Python packages, or additional service is needed.
+Discord receives concise warning/critical embeds and a daily health summary with
+the full email report, formatted for Markdown, attached as `resource-report.md` from the **07:00 host-local**
+report service. No bot, OAuth, Python packages, or additional service is needed.
 
 1. In Discord, open the target server's text channel settings, then **Integrations →
    Webhooks → New Webhook**. Choose the channel and copy the webhook URL. You need
@@ -277,10 +280,11 @@ evidence, plus a cheap CPU-only count. It reports observed availability, missing
 measurements, gaps, CPU activity, peak CPU temperature, and per-sensor thermal
 counts (warning and critical counts may overlap). Missing measurements are unknown,
 not fabricated zeros. Workload evidence describes overlap/correlation, never cause.
-No raw process command lines or workload log lines are sent. Discord daily failure
-is logged without failing a successfully mailed report; it is not automatically
-retried. Manually rerunning the full report sends email again, so use the explicit
-Discord test to troubleshoot instead.
+The attachment contains the full email report, including the process and guest
+details it reports. Anyone who can read the Discord channel can read the attachment.
+Scheduled delivery tracks email and Discord independently and can retry explicit
+Discord HTTP failures; ambiguous delivery is not retried. Manually rerunning the
+full report sends email again, so use the explicit Discord test to troubleshoot instead.
 
 Diagnostics use fixed error categories/status codes and never log webhook URLs or
 response bodies. Requests use validated `https://discord.com/api[/v10]/webhooks/...`

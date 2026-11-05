@@ -5,6 +5,7 @@ import time
 from email.utils import parsedate_to_datetime
 import os
 import re
+import secrets
 import unicodedata
 import urllib.error
 import urllib.request
@@ -38,7 +39,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def send(message, *, daily=False):
+def send(message, *, daily=False, attachment=None):
     """Return (safe error or None, retry delay seconds). One bounded attempt only."""
     if not enabled():
         return None, 0
@@ -46,9 +47,27 @@ def send(message, *, daily=False):
     if not re.fullmatch(r'https://discord\.com/api(?:/v10)?/webhooks/[0-9]+/[A-Za-z0-9_-]+', url):
         return 'Discord configuration invalid or missing', 60
     try:
-        request = urllib.request.Request(url + '?wait=true',
-            data=json.dumps(message, ensure_ascii=True).encode('ascii'),
-            headers={'Content-Type': 'application/json', 'User-Agent': 'ProxmoxResourceWatch/0.2.0'}, method='POST')
+        if attachment is not None:
+            # Discord displays ordinary message content before file attachments;
+            # embeds appear after them. Keep daily delivery in a single request.
+            embed = message['embeds'][0]
+            message = {'allowed_mentions': message['allowed_mentions'],
+                       'content': f"**{embed['title']}**\n{embed['description']}"}
+        data = json.dumps(message, ensure_ascii=True).encode('ascii')
+        content_type = 'application/json'
+        if attachment is not None:
+            contents = attachment.encode('utf-8')
+            if len(contents) > 2 * 1024 * 1024:
+                return 'Discord report attachment too large', 60
+            boundary = 'prw-' + secrets.token_hex(24)
+            marker = ('--' + boundary).encode('ascii')
+            data = (marker + b'\r\nContent-Disposition: form-data; name="payload_json"\r\n'
+                    b'Content-Type: application/json\r\n\r\n' + data + b'\r\n' + marker +
+                    b'\r\nContent-Disposition: form-data; name="files[0]"; filename="resource-report.md"\r\n'
+                    b'Content-Type: text/markdown; charset=utf-8\r\n\r\n' + contents + b'\r\n' + marker + b'--\r\n')
+            content_type = 'multipart/form-data; boundary=' + boundary
+        request = urllib.request.Request(url + '?wait=true', data=data,
+            headers={'Content-Type': content_type, 'User-Agent': 'ProxmoxResourceWatch/0.2.0'}, method='POST')
         # No environment proxies or redirects: credentials stay at the validated endpoint.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         with opener.open(request, timeout=5) as response:
@@ -58,6 +77,12 @@ def send(message, *, daily=False):
             result = json.loads(body)
             if not isinstance(result, dict) or not isinstance(result.get('id'), str) or not result['id'].isdigit():
                 return 'Discord malformed response', 60
+            if attachment is not None:
+                attachments = result.get('attachments')
+                if not isinstance(attachments, list) or not any(
+                    isinstance(item, dict) and item.get('filename') == 'resource-report.md' for item in attachments
+                ):
+                    return 'Discord report attachment not confirmed', 60
         return None, 0
     except urllib.error.HTTPError as exc:
         status = exc.code

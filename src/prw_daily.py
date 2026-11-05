@@ -82,15 +82,17 @@ def run(reporter, day, mailer, create=False, now=None, initial=False):
             if initial and state['email']['status'] != 'success':
                 raise RuntimeError('Initial email delivery not confirmed; inspect private ledger')
             return False
+        date = dt.date.fromisoformat(day)
+        repairs = reporter.repair_completed_days([(date+dt.timedelta(days=offset)).isoformat() for offset in (-1, 0, 1)])
         rows, errors = reporter.rows_for(day)
         summary = {}
-        date = dt.date.fromisoformat(day)
         previous, prior_errors = reporter.rows_for((date-dt.timedelta(days=1)).isoformat())
         following, next_errors = reporter.rows_for((date+dt.timedelta(days=1)).isoformat())
         context = reporter.combine_rows(previous, rows, following)
         subject, body = reporter.report(day, rows, errors+prior_errors+next_errors, context, summary=summary)
-        import prw_history
-        body += '\n' + '\n'.join(prw_history.comparison(reporter, day, rows, errors)) + '\n'
+        body = reporter.complete_report(day, rows, errors, body)
+        body = reporter.describe_repairs(body, repairs)
+        summary['repairs'] = repairs
         if age >= 300:
             subject = '[DELAYED] ' + subject
             body = f'Delayed report for {day}; original schedule 07:00 host-local.\n\n' + body
@@ -103,12 +105,12 @@ def run(reporter, day, mailer, create=False, now=None, initial=False):
             error, delay = None, 0
             try:
                 if destination == 'email':
-                    reporter.deliver(subject, body, os.environ['PRW_REPORT_TO'], mailer)
+                    reporter.deliver(subject, reporter.wrap_report_email(body), os.environ['PRW_REPORT_TO'], mailer)
                 else:
                     message = reporter.summary_message(day, summary)
                     if age >= 300:
                         message['embeds'][0]['title'] = '[DELAYED] ' + message['embeds'][0]['title']
-                    error, delay = reporter.discord.send(message, daily=True)
+                    error, delay = reporter.discord.send(message, daily=True, attachment=reporter.markdown_report(body))
             except Exception:
                 error = 'ambiguous'
             if error is None:

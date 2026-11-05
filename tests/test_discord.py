@@ -11,6 +11,8 @@ import tempfile
 import unittest
 from unittest import mock
 from urllib.error import HTTPError
+from email.parser import BytesParser
+from email.policy import default
 
 ROOT = Path(__file__).resolve().parents[1]
 def load(filename, name):
@@ -55,6 +57,26 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(self.open.call_args.kwargs['timeout'], 5)
         self.assertEqual(json.loads(request.data)['allowed_mentions']['parse'], [])
         self.assertIsInstance(self.build.call_args.args[1], discord.NoRedirect)
+
+    def test_full_report_attachment_is_not_truncated(self):
+        body = 'Complete report — CPU temperature\n' + ('detail\n' * 5000)
+        self.open.return_value.__enter__.return_value.read.return_value = b'{"id":"123","attachments":[{"filename":"resource-report.md"}]}'
+        self.assertEqual(discord.send(discord.payload('Daily', 'Summary', 1), daily=True, attachment=body), (None, 0))
+        request = self.open.call_args.args[0]
+        message = BytesParser(policy=default).parsebytes(
+            b'Content-Type: ' + request.get_header('Content-type').encode() + b'\r\nMIME-Version: 1.0\r\n\r\n' + request.data)
+        parts = list(message.iter_parts())
+        self.assertEqual(parts[0].get_param('name', header='content-disposition'), 'payload_json')
+        payload = json.loads(parts[0].get_payload(decode=True))
+        self.assertEqual(payload['allowed_mentions']['parse'], [])
+        self.assertIn('Summary', payload['content'])
+        self.assertNotIn('embeds', payload)
+        self.assertEqual(parts[1].get_filename(), 'resource-report.md')
+        self.assertEqual(parts[1].get_payload(decode=True).decode('utf-8'), body)
+
+    def test_missing_report_attachment_is_not_success(self):
+        self.assertEqual(discord.send(discord.payload('Daily', 'Summary', 1), attachment='report')[0],
+                         'Discord report attachment not confirmed')
 
     def test_disabled_and_legacy_configuration(self):
         for env in ({}, {'PRW_DISCORD_ENABLED':'false', 'PRW_DISCORD_WEBHOOK_URL':URL}):
@@ -202,6 +224,25 @@ class DeliveryTests(unittest.TestCase):
         self.send.assert_called_once()
 
 class SummaryTests(unittest.TestCase):
+    def test_email_wrapping_keeps_words_and_indentation(self):
+        source = '    ' + ('long detail ' * 15).rstrip() + '\n'
+        wrapped = report.wrap_report_email(source)
+        self.assertTrue(all(len(line) <= 78 and line.startswith('    ') for line in wrapped.splitlines()))
+        self.assertEqual(' '.join(source.split()), ' '.join(wrapped.split()))
+        self.assertEqual(report.wrap_report_email('short\n'), 'short\n')
+
+    def test_markdown_report_has_headings_and_safe_readable_details(self):
+        body = ('Proxmox Resource Report | pve | 2026-11-04\n======\n\nWHAT HAPPENED\n-----\n'
+                'A warning was observed.\n\nTEMPERATURES\n\n  cpu_sensor: 87.5°C\n'
+                '  process <unsafe> [name]: 3%\n\nNOTES\n-----\nUnknown is not zero.\n')
+        markdown = report.markdown_report(body)
+        self.assertIn('# Proxmox Resource Report', markdown)
+        self.assertIn('## WHAT HAPPENED', markdown)
+        self.assertIn('## TEMPERATURES', markdown)
+        self.assertIn('- cpu\\_sensor: 87.5°C', markdown)
+        self.assertIn('&lt;unsafe&gt; \\[name\\]', markdown)
+        self.assertIn('## NOTES', markdown)
+
     def test_shared_analysis_and_unchanged_email(self):
         sample_rows = rows([99, 99, 99])
         summary = {}
@@ -212,6 +253,8 @@ class SummaryTests(unittest.TestCase):
         message = report.summary_message('2026-11-03', summary)
         self.assertIn('210.2°F', message['embeds'][0]['description'])
         text = message['embeds'][0]['description']
+        self.assertIn('at or above the critical setting', text)
+        self.assertIn('WHAT HAPPENED', original[1])
         self.assertIn('📊 COVERAGE', text)
         self.assertIn('\n\n💻 CPU\n', text)
         self.assertIn('\n\n🌡️ TEMPERATURE\n', text)
@@ -219,6 +262,22 @@ class SummaryTests(unittest.TestCase):
         self.assertIn('Clock uncertain: no', text)
         self.assertEqual(summary['thermal'], {'warning':1, 'critical':1})
         self.assertEqual(summary['sustained_cpu'], 1)
+
+    def test_warning_overview_and_missing_readings_are_plain(self):
+        with mock.patch.object(report, 'collect_evidence', return_value=([], [])):
+            _, body = report.report('2026-11-03', rows([86]), 0)
+        self.assertIn('below the critical setting', body)
+        self.assertIn('actual duration is unknown', body)
+        self.assertIn('No fan-speed readings were available', body)
+        self.assertIn('FAN SPEEDS\n----------\n\n', body)
+        self.assertIn('GUEST ACTIVITY\n--------------\n\n', body)
+        self.assertIn('WHAT HAPPENED\n-------------\n\n', body)
+        self.assertIn('TEMPERATURES\n------------\n\n', body)
+        self.assertIn('BRIEF SPIKES (< 30s): 1; showing top 10\n------------\n\n', body)
+        self.assertIn('WARNING: ongoing (unresolved)\n\n', body)
+        self.assertIn('estimated core-seconds; one-core peak):\n\n', body)
+        self.assertIn('range.\n\nCPU thresholds:', body)
+        self.assertIn('daily peaks may not coincide with an event', body)
 
     def test_missing_data_is_unknown(self):
         summary = {}
@@ -272,6 +331,7 @@ class SummaryTests(unittest.TestCase):
                     report.send_report('subject','body','mutt','2026-11-03',{})
                 mail.assert_called_once()
                 send.assert_called_once()
+                self.assertEqual(send.call_args.kwargs['attachment'], report.markdown_report(mail.call_args.args[1]))
 
 if __name__ == '__main__':
     unittest.main()

@@ -109,6 +109,20 @@ class Delivery(unittest.TestCase):
 
 
 class StatisticsAndMetadata(unittest.TestCase):
+    def test_guest_explanation_distinguishes_event_checks_from_daily_peak(self):
+        start = dt.datetime(2026, 9, 30, 12, tzinfo=dt.timezone.utc)
+        guest = dict(type='qemu', vmid=100, name='worker', uptime=100, cpu_percent_capacity=70)
+        later = dict(guest, uptime=160, cpu_percent_capacity=33)
+        observations = [(start, [guest]), (start + dt.timedelta(seconds=60), [later])]
+        with mock.patch.object(guests, 'observations', return_value=observations):
+            lines = guests.lines(report, '2026-09-30', [(start + dt.timedelta(seconds=60), start + dt.timedelta(seconds=60))])
+        body = '\n'.join(lines)
+        self.assertIn('Highest CPU use in this period: 70.0%', body)
+        self.assertIn('worker was checked 1 time.', body)
+        self.assertIn('33.0%', body)
+        self.assertIn('did not reach the 50% activity threshold', body)
+        self.assertIn('does not prove a guest caused it', body)
+
     def test_irregular_cpu_has_exact_interval_weighting(self):
         day = '2026-09-30'
         start, end = history.bounds(day)
@@ -144,8 +158,8 @@ class StatisticsAndMetadata(unittest.TestCase):
         for rows in (rolled, conflict):
             with mock.patch.object(guests,'observations',return_value=[(start,[guest])]), mock.patch.object(report,'collect_evidence',return_value=([],[])):
                 _, body=report.report('2026-09-30', rows, 0)
-            self.assertIn('Possible correlation:',body)
-            self.assertNotIn('Confirmed temporal overlap:',body)
+            self.assertIn('Timing uncertain:',body)
+            self.assertNotIn('During host events, worker was checked',body)
 
     def test_followup_preserves_rollback_and_duplicate_uncertainty(self):
         import prw_followup
@@ -158,8 +172,8 @@ class StatisticsAndMetadata(unittest.TestCase):
         for rows in (rolled,conflict):
             with mock.patch.object(guests,'observations',return_value=[(start,[guest])]), mock.patch.object(report,'workload_evidence',return_value=[]):
                 _,body=prw_followup.context(report,job,rows)
-            self.assertIn('Possible correlation:',body)
-            self.assertNotIn('Confirmed temporal overlap:',body)
+            self.assertIn('Timing uncertain:',body)
+            self.assertNotIn('During host events, worker was checked',body)
         spec=importlib.util.spec_from_file_location('conflict_alert',SRC/'proxmox-resource-alert.py')
         alert=importlib.util.module_from_spec(spec)
         spec.loader.exec_module(alert)
@@ -186,7 +200,7 @@ class StatisticsAndMetadata(unittest.TestCase):
         start=dt.datetime(2026,9,30,tzinfo=dt.timezone.utc)
         with mock.patch.object(guests,'observations',return_value=[(start,[dict(type='lxc',vmid=102,name=name,cpu_percent_capacity=50)])]):
             output=guests.lines(report,'2026-09-30')
-        self.assertTrue(all(len(line.splitlines())==1 for line in output))
+        self.assertTrue(all(len(line.splitlines()) <= 1 for line in output))
 
     def test_validator_matches_required_boundaries(self):
         for values in ({'PRW_ALERT_CPU_PERCENT':'0'},{'PRW_LOG_DIR':''}):

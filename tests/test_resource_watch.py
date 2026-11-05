@@ -10,6 +10,7 @@ import tempfile
 import subprocess
 import time
 import stat
+import signal
 import types
 import unittest
 from unittest import mock
@@ -46,6 +47,127 @@ def sample(moment, cpu=1, temp=45, process="kvm", per_core=2):
 
 
 class SamplingAndStorageTests(unittest.TestCase):
+    def test_completed_day_repair_keeps_original_and_rejects_other_damage(self):
+        date = dt.datetime.now().astimezone().date() - dt.timedelta(days=1)
+        day = date.isoformat()
+        stamp = dt.datetime.combine(date, dt.time(12)).astimezone()
+        valid = json.dumps(sample(stamp)).encode() + b'\n'
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(report, 'LOG_DIR', Path(directory)):
+            path = Path(directory) / (day + '.jsonl')
+            original = b'\0' * 3681 + valid
+            path.write_bytes(original)
+            notice = report.repair_completed_days([day])
+            self.assertEqual(path.read_bytes(), valid)
+            backup = Path(str(path) + '.prw-original')
+            self.assertEqual(backup.read_bytes(), original)
+            self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+            self.assertIn('repaired 1 sample', notice[0])
+            rows, errors = report.rows_for(day, include_legacy=False)
+            self.assertEqual((len(rows), errors), (1, 0))
+            self.assertIn('earlier repair', report.repair_completed_days([day])[0])
+            path.write_bytes(original)
+            self.assertIn('could not be completed', report.repair_completed_days([day])[0])
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(backup.read_bytes(), original)
+            path.write_bytes(original + b'{bad json}\n')
+            self.assertTrue(report.repair_completed_days([day]))
+            self.assertEqual(path.read_bytes(), original + b'{bad json}\n')
+            self.assertEqual(backup.read_bytes(), original)
+
+    def test_repair_closed_gzip_but_not_today(self):
+        today = dt.datetime.now().astimezone().date()
+        old = today - dt.timedelta(days=2)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(report, 'LOG_DIR', Path(directory)):
+            for date in (old, today):
+                line = json.dumps(sample(dt.datetime.combine(date, dt.time(12)).astimezone())).encode() + b'\n'
+                path = Path(directory) / (date.isoformat() + '.jsonl.gz')
+                path.write_bytes(gzip.compress(b'\0' * 10 + line))
+            messages = report.repair_completed_days([old.isoformat(), today.isoformat()])
+            self.assertEqual(len(messages), 1)
+            self.assertFalse(gzip.decompress((Path(directory) / (old.isoformat() + '.jsonl.gz')).read_bytes()).startswith(b'\0'))
+            self.assertTrue(gzip.decompress((Path(directory) / (today.isoformat() + '.jsonl.gz')).read_bytes()).startswith(b'\0'))
+
+    def test_report_recovers_only_complete_null_prefixed_samples_without_modifying_log(self):
+        day = '2026-11-04'
+        stamp = dt.datetime(2026, 11, 4, 12, tzinfo=TZ)
+        valid = json.dumps(sample(stamp)).encode()
+        contents = b'\0' * 3681 + valid + b'\n' + b'\0{bad json}\n' + b'\0' + valid
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / (day + '.jsonl')
+            path.write_bytes(contents)
+            with mock.patch.object(report, 'LOG_DIR', Path(directory)):
+                rows, errors = report.rows_for(day, include_legacy=False)
+            self.assertEqual(path.read_bytes(), contents)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(errors, 3)
+            self.assertEqual(rows.recovered, 1)
+            self.assertTrue(rows.data_uncertain)
+            with mock.patch.object(report, 'collect_evidence', return_value=([], [])):
+                _, body = report.report(day, rows, errors)
+            self.assertIn('Recovered 1 sample(s)', body)
+            self.assertIn('other data may have been lost', body)
+            import prw_history
+            self.assertTrue(prw_history.aggregate(report, day, rows, errors)['uncertain'])
+
+    def test_sample_is_flushed_and_synced(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(sampler.os, 'fsync', wraps=os.fsync) as sync:
+            path = Path(directory) / 'samples.jsonl'
+            sampler.append_sample(path, {'time': '2026-11-05T12:00:00+00:00'})
+            self.assertEqual(json.loads(path.read_text())['time'], '2026-11-05T12:00:00+00:00')
+            sync.assert_called_once()
+
+    def test_sampler_stops_cleanly_on_sigterm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            program = '''
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("sampler", sys.argv[1])
+s = importlib.util.module_from_spec(spec); spec.loader.exec_module(s)
+s.LOG_DIR = pathlib.Path(sys.argv[2]); s.INTERVAL = 1
+s.cpu_ticks = lambda: (100, 50)
+s.process_ticks = lambda: {}
+s.sensors = lambda: {}
+s.maintenance = lambda day: None
+s.main()
+'''
+            process = subprocess.Popen(['python3', '-c', program, str(PROJECT / 'src/proxmox-resource-watch.py'), directory])
+            try:
+                deadline = time.monotonic() + 8
+                while not list(Path(directory).glob('*.jsonl')) and time.monotonic() < deadline:
+                    time.sleep(.05)
+                self.assertTrue(list(Path(directory).glob('*.jsonl')))
+                process.send_signal(signal.SIGTERM)
+                self.assertEqual(process.wait(timeout=5), 0)
+                for line in next(Path(directory).glob('*.jsonl')).read_text().splitlines():
+                    self.assertIn('time', json.loads(line))
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+
+    def test_signal_during_write_finishes_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            program = '''
+import importlib.util, os, pathlib, signal, sys
+spec = importlib.util.spec_from_file_location("sampler", sys.argv[1])
+s = importlib.util.module_from_spec(spec); spec.loader.exec_module(s)
+s.LOG_DIR = pathlib.Path(sys.argv[2]); s.INTERVAL = 1
+s.cpu_ticks = lambda: (100, 50)
+s.process_ticks = lambda: {}
+s.sensors = lambda: {}
+s.maintenance = lambda day: None
+original = s.os.fsync
+def stop_during_sync(fd):
+    os.kill(os.getpid(), signal.SIGTERM)
+    original(fd)
+s.os.fsync = stop_during_sync
+s.main()
+'''
+            result = subprocess.run(['python3', '-c', program, str(PROJECT / 'src/proxmox-resource-watch.py'), directory], timeout=8)
+            self.assertEqual(result.returncode, 0)
+            lines = next(Path(directory).glob('*.jsonl')).read_text().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertIn('time', json.loads(lines[0]))
+
     def test_unique_sensor_identity_code_path(self):
         # Labels are explicit, not overwritten by common driver names.
         content = (PROJECT / "src" / "proxmox-resource-watch.py").read_text()
