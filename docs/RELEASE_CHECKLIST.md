@@ -126,7 +126,7 @@ See [feature/security/rollback guide](GUEST_HISTORY_DELIVERY.md) and
 
 ## Production security gate (new candidates)
 
-PR #13 follow-up evidence and actual repository-setting status are in [SECURITY_FOLLOWUP.md](SECURITY_FOLLOWUP.md). At the time of that review, `main` had no protection/ruleset and secret scanning, push protection, Dependabot security features, and private vulnerability reporting were disabled. Treat those as open administrator actions, not completed gates.
+PR #13 follow-up evidence and actual repository-setting status are in [SECURITY_FOLLOWUP.md](SECURITY_FOLLOWUP.md). The original inspection found no `main` protection; active ruleset `26641585` now requires review and seven security/regression checks and blocks force pushes and deletion. Secret scanning, push protection, Dependabot security features, and private vulnerability reporting remained disabled at the last API inspection; treat those as separate administrator actions.
 
 Record each item in a private deployment record before any production action:
 
