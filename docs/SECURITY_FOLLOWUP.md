@@ -63,7 +63,7 @@ Zizmor's default regular persona reports six filtered pedantic findings, not rep
 | Setting | Verified status | Recommended administrator action |
 | --- | --- | --- |
 | `main` protection/rulesets | Active repository ruleset `26641585`, exact `refs/heads/main` target, no bypass actors; branch API reports `protected:true`. | Retain and audit changes. |
-| Required checks/reviews | One approval, stale reviews dismissed, last reviewable push requires another person's approval, conversations resolved. Strict current-base policy. Requires six named workflow jobs plus separate `CodeQL`, pinned to their verified GitHub Apps. | Retain; ensure an eligible independent collaborator can approve future PRs. |
+| Required checks/reviews | Zero approvals required for the sole maintainer; last-push and unattributed-change extra approvals disabled. Review conversations must be resolved. Strict current-base policy requires six named workflow jobs plus separate `CodeQL`, pinned to their verified GitHub Apps. | Obtain independent review when available; revisit approval requirements if another eligible reviewer joins. |
 | Force-push/deletion | Both blocked by effective `non_fast_forward` and `deletion` rules. | Retain. |
 | Actions default token | Read-only; Actions PR approval disabled. | Keep read-only. |
 | Actions allowed sources/SHA policy | All actions allowed; SHA pin enforcement disabled. | Consider allowlist or SHA enforcement after workflow testing. |

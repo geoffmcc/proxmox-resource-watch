@@ -126,7 +126,7 @@ See [feature/security/rollback guide](GUEST_HISTORY_DELIVERY.md) and
 
 ## Production security gate (new candidates)
 
-PR #13 follow-up evidence and actual repository-setting status are in [SECURITY_FOLLOWUP.md](SECURITY_FOLLOWUP.md). The original inspection found no `main` protection; active ruleset `26641585` now requires review and seven security/regression checks and blocks force pushes and deletion. Dependabot alerts/security updates, secret scanning/push protection, and private vulnerability reporting are also enabled per repository API. Setting readback does not establish end-to-end detection behavior.
+PR #13 follow-up evidence and actual repository-setting status are in [SECURITY_FOLLOWUP.md](SECURITY_FOLLOWUP.md). The original inspection found no `main` protection; active ruleset `26641585` now requires pull requests and seven security/regression checks and blocks force pushes and deletion. It requires zero approvals for the sole maintainer; obtain independent review when available. Dependabot alerts/security updates, secret scanning/push protection, and private vulnerability reporting are also enabled per repository API. Setting readback does not establish end-to-end detection behavior.
 
 Record each item in a private deployment record before any production action:
 
