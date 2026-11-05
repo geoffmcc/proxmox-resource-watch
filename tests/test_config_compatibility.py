@@ -45,25 +45,25 @@ class ConfigCompatibility(unittest.TestCase):
     def test_shell_text_never_executes_and_errors_redact_value(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / 'marker'
-            secret = f'$(touch {marker})'
-            values, _ = self.load_text(f'PRW_REPORT_TO=root\nUNUSED={secret}\n')
-            self.assertEqual(values['UNUSED'], secret)
+            canary = f'$(touch {marker})'
+            values, _ = self.load_text(f'PRW_REPORT_TO=root\nUNUSED={canary}\n')
+            self.assertEqual(values['UNUSED'], canary)
             self.assertFalse(marker.exists())
             errors, warnings = config.validate(values)
             self.assertFalse(errors)
-            self.assertNotIn(secret, str(warnings))
+            self.assertNotIn(canary, str(warnings))
             self.assertTrue(config.validate({'PRW_REPORT_TO': 'root', 'PRW_LOG_DIR': '/tmp'})[0])
 
     def test_cli_error_never_prints_secret(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config'
-            secret = 'synthetic-secret-never-print'
-            path.write_text(f'PRW_REPORT_TO="unterminated-{secret}\n')
+            canary = 'synthetic-redaction-canary'
+            path.write_text(f'PRW_REPORT_TO="unterminated-{canary}\n')
             output = io.StringIO()
             with mock.patch.object(sys, 'argv', ['check-config', '--config', str(path)]), contextlib.redirect_stdout(output):
                 self.assertEqual(config.main(), 2)
             self.assertIn('details omitted', output.getvalue())
-            self.assertNotIn(secret, output.getvalue())
+            self.assertNotIn(canary, output.getvalue())
 
 
 if __name__ == '__main__':
