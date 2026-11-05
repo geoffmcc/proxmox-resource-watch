@@ -69,7 +69,7 @@ else
   say 'New installation: default email is addressed to root via Mutt.'
 fi
 say 'Install will preserve existing logs, back up replaced files, restart only the watcher service,'
-say 'send one initial report and enable the daily-report, immediate-alert and optional follow-up timers.'
+say 'check the initial report ledger and enable the daily-report, immediate-alert and optional follow-up timers.'
 say 'The follow-up timer runs only when PRW_FOLLOWUP_ENABLED=true. Guest collection is separately opt-in.'
 # All destination checks happen before the first write or service change. The
 # fixed parents are administrator-controlled; this also rules out unprivileged
@@ -163,8 +163,8 @@ systemctl enable proxmox-resource-watch.service
 systemctl restart proxmox-resource-watch.service
 systemctl is-active --quiet proxmox-resource-watch.service || fail 'Sampler did not start; inspect journalctl -u proxmox-resource-watch.service.'
 
-# Validate report delivery before enabling recurring notifications.
-say 'Sending one daily report now to verify the configured mail transport...'
+# An existing successful delivery record suppresses a duplicate report.
+say 'Checking initial report delivery; an already successful delivery will not be sent again...'
 systemctl start proxmox-resource-report.service || fail 'Email delivery failed; inspect journalctl -u proxmox-resource-report.service. Timers not enabled.'
 systemctl start proxmox-resource-alert.service || fail 'Alert check failed; inspect journalctl -u proxmox-resource-alert.service. Timers not enabled.'
 systemctl enable --now proxmox-resource-report.timer proxmox-resource-alert.timer proxmox-resource-followup.timer proxmox-resource-daily.timer proxmox-resource-guests.timer
@@ -175,5 +175,5 @@ systemctl is-active --quiet proxmox-resource-followup.timer || fail 'Follow-up t
 
 say 'Installation complete. Monitoring, primary notification timers and the optional context timer are active.'
 say "Original logs were not deleted. Backups of replaced files: $backup_dir"
-say 'Confirm the installation report arrived in your mailbox.'
+say 'If a new installation report was sent, confirm it arrived in your mailbox.'
 systemctl list-timers proxmox-resource-report.timer proxmox-resource-alert.timer proxmox-resource-followup.timer --no-pager

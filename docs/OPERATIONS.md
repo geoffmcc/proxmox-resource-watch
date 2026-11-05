@@ -47,7 +47,7 @@ If you're using the included `mutt`/`root` defaults, you can first test from a r
 printf 'Resource Watch mail test.\n' | mutt -s 'Resource Watch mail test' -- root
 ```
 
-Confirm the message arrives in the mailbox you monitor. The installer additionally tests the sandboxed service delivery, which can behave differently from an interactive shell.
+Confirm the message arrives in the mailbox you monitor. The installer starts the sandboxed report service, which can behave differently from an interactive shell. If the daily ledger already records a successful email delivery for that reporting date, it skips another send; in that case the installer does not test the current mail transport. Do not remove or roll back delivery records merely to force a test, as doing so can cause duplicate reports.
 
 ### Upgrade from the original gist
 
