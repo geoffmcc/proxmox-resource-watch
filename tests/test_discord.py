@@ -243,6 +243,20 @@ class SummaryTests(unittest.TestCase):
         self.assertIn('&lt;unsafe&gt; \\[name\\]', markdown)
         self.assertIn('## NOTES', markdown)
 
+    def test_markdown_keeps_adjacent_details_compact(self):
+        body = 'TEMPERATURES\n------------\n\n  CPU: 80 C\n  GPU: 60 C\n\nNOTES\n-----\nFirst note.\nSecond note.\n'
+        markdown = report.markdown_report(body)
+        self.assertIn('- CPU: 80 C\n- GPU: 60 C', markdown)
+        self.assertIn('First note.  \nSecond note.', markdown)
+        self.assertNotIn('\n\n\n', markdown)
+
+    def test_email_notes_are_compact(self):
+        with mock.patch.dict('sys.modules', {'prw_history': mock.Mock(comparison=lambda *args: ['HISTORICAL COMPARISON'])}):
+            body = report.complete_report('2026-11-03', [], 0, 'Report\n')
+        notes = body.split('NOTES\n-----\n\n', 1)[1]
+        self.assertNotIn('\n\n', notes)
+        self.assertIn('Missing sensor data means unavailable, not zero.', notes)
+
     def test_shared_analysis_and_unchanged_email(self):
         sample_rows = rows([99, 99, 99])
         summary = {}
