@@ -195,6 +195,17 @@ class FollowupTests(unittest.TestCase):
         self.assertIn('\n\n📋 WORKLOAD CONTEXT', discord_body)
         self.assertNotIn('🔎 OBSERVATION', body)
 
+    def test_long_discord_followup_includes_complete_attachment(self):
+        long_body = 'Cause: unknown.\n' + ('Guest activity detail.\n' * 120) + 'Final context survives.'
+        self.queue()
+        with mock.patch.object(followups, 'context', return_value=('WARNING', long_body)):
+            self.run_jobs()
+        message = self.discord.call_args.args[0]
+        attachment = self.discord.call_args.kwargs['attachment']
+        self.assertIn('Full follow-up attached', message['embeds'][0]['description'])
+        self.assertIn('Final context survives.', attachment)
+        self.assertIn('Final context survives.', self.mail.call_args.args[1])
+
     def test_mentions_secrets_and_raw_commands_excluded(self):
         self.rows[0][1]['top_processes'][0].update(name='@everyone',cmdline='secret process command')
         self.evidence.return_value = (['https://discord.com/api/webhooks/123/private_token @everyone'],[])

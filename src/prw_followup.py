@@ -221,12 +221,16 @@ def run(reporter, directory, rows_loader, now=None):
                                          'Cause: unknown. Follow-up analysis unavailable; primary alerts unaffected.')
             severity, body = cached[cache_key]
             title = f'{severity} follow-up | {socket.gethostname()}'
-            body = reporter.discord.clean(body, 1800)
+            body = reporter.discord.clean(body, len(body))
             try:
                 if destination == 'email':
                     reporter.deliver('[PVE context] '+title, body+'\n', os.environ['PRW_REPORT_TO'], os.environ.get('PRW_MAILER', 'auto'))
                 else:
-                    error, _ = reporter.discord.send(reporter.discord.payload(title, discord_context(body), 0xE74C3C if severity == 'CRITICAL' else 0xE67E22))
+                    formatted = discord_context(body)
+                    attachment = formatted if len(formatted) > 1800 else None
+                    if attachment:
+                        formatted = formatted[:1700].rstrip() + '\n\nFull follow-up attached as resource-report.md.'
+                    error, _ = reporter.discord.send(reporter.discord.payload(title, formatted, 0xE74C3C if severity == 'CRITICAL' else 0xE67E22), attachment=attachment)
                     if error:
                         print(error+' (follow-up; no retry)', flush=True)
             except Exception:

@@ -885,10 +885,10 @@ def report(day, rows, errors, context_rows=None, summary=None):
 def complete_report(day, rows, errors, body):
     import prw_history
     notes = ["NOTES", "-----", "",
-             "Events are correlations, not proof that a process caused the heat or fan change.", "",
-             "Only sampled top processes are available; short-lived or lower-ranked processes can be missed.", "",
-             "Durations are estimates from observed sample intervals; gaps and unobserved time are excluded.", "",
-             "Per-process CPU is percent of one logical core; host CPU is across all cores.", "",
+             "Events are correlations, not proof that a process caused the heat or fan change.",
+             "Only sampled top processes are available; short-lived or lower-ranked processes can be missed.",
+             "Durations are estimates from observed sample intervals; gaps and unobserved time are excluded.",
+             "Per-process CPU is percent of one logical core; host CPU is across all cores.",
              "Missing sensor data means unavailable, not zero."]
     return body.rstrip() + "\n\n" + "\n".join(prw_history.comparison(_reporter(), day, rows, errors)) + "\n\n" + "\n".join(notes) + "\n"
 
@@ -906,17 +906,20 @@ def markdown_report(body):
     output = []
     for raw in body.splitlines():
         line = raw.strip()
-        if not line or re.fullmatch(r'[-=]{3,}', line):
+        if re.fullmatch(r'[-=]{3,}', line):
             continue
-        if line.startswith('Proxmox Resource Report |'):
-            output.append('# ' + escape(line))
+        if not line:
+            if output and output[-1] != '':
+                output.append('')
+        elif line.startswith('Proxmox Resource Report |'):
+            output.extend(['', '# ' + escape(line), ''])
         elif any(line == heading or line.startswith(heading + ' ') or line.startswith(heading + ' (') for heading in headings):
-            output.append('## ' + escape(line))
+            output.extend(['', '## ' + escape(line), ''])
         elif raw[0].isspace():
             output.append('- ' + escape(line))
         else:
-            output.append(escape(line))
-    return '\n\n'.join(output) + '\n'
+            output.append(escape(line) + '  ')
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(output)).strip() + '\n'
 
 
 def wrap_report_email(body, width=78):
